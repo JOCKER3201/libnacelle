@@ -574,6 +574,9 @@ pub struct Placed {
 /// shells apart by `id`.
 pub struct Layout {
     placed: Vec<Placed>,
+    /// Index from instance identity to its position in `placed`, so
+    /// `place()` finds an existing entry without scanning the vector.
+    index: std::collections::HashMap<crate::layout::InstanceId, usize>,
     /// Where an instance this layout does not hold is reported to be:
     /// far to the RIGHT of the window. Every presence scan in the
     /// program asks `rect.x < w`, so the absent must answer from
@@ -585,15 +588,22 @@ impl Layout {
     /// A board with nothing placed yet — the starting point of every
     /// layout engine.
     pub fn empty(w: f32, h: f32) -> Layout {
-        Layout { placed: Vec::new(), off: Rect::new(w * 2.0, 0.0, w * 0.16, h * 0.6) }
+        Layout {
+            placed: Vec::new(),
+            index: std::collections::HashMap::new(),
+            off: Rect::new(w * 2.0, 0.0, w * 0.16, h * 0.6),
+        }
     }
 
     /// Places one instance, replacing an earlier rectangle for the same
     /// identity.
     pub fn place(&mut self, id: crate::layout::InstanceId, widget: Panel, rect: Rect) {
-        match self.placed.iter_mut().find(|p| p.id == id) {
-            Some(slot) => slot.rect = rect,
-            None => self.placed.push(Placed { id, widget, rect }),
+        match self.index.get(&id) {
+            Some(&i) => self.placed[i].rect = rect,
+            None => {
+                self.index.insert(id, self.placed.len());
+                self.placed.push(Placed { id, widget, rect });
+            }
         }
     }
 
@@ -670,6 +680,7 @@ impl Layout {
                 .iter()
                 .map(|p| Placed { rect: ins(p.rect), ..*p })
                 .collect(),
+            index: self.index.clone(),
             off: self.off,
         }
     }

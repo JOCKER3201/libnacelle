@@ -363,7 +363,7 @@ pub fn diagnostics() -> Arc<ThemeDiagnostics> {
 /// init, exactly like a [`TokenId`]; the order is the master's declaration
 /// order of its `class.*` tokens.
 pub fn class_id(name: &str) -> Option<u16> {
-    let engine = ENGINE.get()?.lock().ok()?;
+    let engine = ENGINE.get()?.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let want = format!("class.{name}");
     let mut i = 0u16;
     for n in engine.schema.names() {
@@ -390,7 +390,7 @@ pub fn id(name: &str) -> Option<TokenId> {
         let _ = resolved();
     }
     let e = ENGINE.get()?;
-    let g = e.lock().ok()?;
+    let g = e.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     g.schema.id(name)
 }
 
@@ -446,7 +446,7 @@ pub fn role_px(raw: f32, own_floor: f32, global_floor: f32, ceiling: f32) -> f32
 /// caller that wants to compare by name once at init.
 pub fn enum_index(token: TokenId, word: &str) -> Option<u16> {
     let e = ENGINE.get()?;
-    let g = e.lock().ok()?;
+    let g = e.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     g.schema.enum_index(token, word)
 }
 
@@ -459,7 +459,7 @@ pub fn enum_index(token: TokenId, word: &str) -> Option<u16> {
 /// the name it asked with.
 pub fn name_of(token: TokenId) -> Option<String> {
     let e = ENGINE.get()?;
-    let g = e.lock().ok()?;
+    let g = e.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let name = g.schema.name(token);
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -472,7 +472,7 @@ pub fn name_of(token: TokenId) -> Option<String> {
 pub fn enum_word_of(token: TokenId) -> Option<String> {
     let i = resolved().enum_of(token);
     let e = ENGINE.get()?;
-    let g = e.lock().ok()?;
+    let g = e.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     g.schema.enum_word(token, i).map(|s| s.to_string())
 }
 
@@ -1148,7 +1148,7 @@ fn select(mood: Option<&str>, variant: Option<&str>) -> bool {
 /// declared alpha to zero over `motion.mood_change.duration`, drawn last.
 pub fn mood_wash() -> Option<color::Color> {
     let slot = ENGINE.get()?;
-    let g = slot.lock().ok()?;
+    let g = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let s = g.siblings.get(g.active)?;
     let mut out = Vec::new();
     let r = resolve::resolve(&g.schema, &s.spec, &mut out);

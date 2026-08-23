@@ -10,7 +10,7 @@
 
 use crate::base::{Layout, LayoutMode, SizeTable};
 use crate::layout::{board_key, BoardId, InstanceId, LayoutDef, ScreenKey};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct BoardWorld {
     /// The selected layaut itself — what position (0, 0) shows. Held
@@ -187,10 +187,11 @@ impl BoardWorld {
         screen: ScreenKey,
         t: &SizeTable,
     ) -> Vec<InstanceId> {
+        let mut seen: HashSet<InstanceId> = HashSet::new();
         let mut out: Vec<InstanceId> = Vec::new();
         for k in self.ids() {
             for p in self.solve(k, w, h, pad, screen, t).iter() {
-                if p.rect.x < w && !out.contains(&p.id) {
+                if p.rect.x < w && seen.insert(p.id) {
                     out.push(p.id);
                 }
             }

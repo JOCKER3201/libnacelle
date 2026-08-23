@@ -1079,15 +1079,15 @@ pub fn available_ui_families() -> Vec<String> {
     out
 }
 
-/// Default search patterns used when no family is selected.
-const DEFAULT_MONO_PATTERNS: [&str; 10] = [
-    "firamonoregular", "firamono", "firacoderegular", "firacode",
-    "jetbrainsmonoregular", "jetbrainsmono", "dejavusansmono",
-    "liberationmonoregular", "liberationmono", "notosansmono",
+/// Default search patterns used when no family is selected. The master's
+/// own `face.mono.family` and `face.ui.family` lists, in their order — the
+/// floor a slot lands on is the theme's list, never a family of this file's
+/// own choosing.
+const DEFAULT_MONO_PATTERNS: [&str; 4] = [
+    "jetbrainsmonoregular", "jetbrainsmono", "firamonoregular", "firamono",
 ];
-const DEFAULT_UI_PATTERNS: [&str; 8] = [
-    "unitedsansmedium", "unitedsans", "oxanium", "rajdhani",
-    "exo2", "orbitron", "sairacondensed", "saira",
+const DEFAULT_UI_PATTERNS: [&str; 5] = [
+    "rajdhani", "saira", "exo2", "unitedsansmedium", "unitedsans",
 ];
 
 /// Loads a font by family display name and weight
@@ -1140,7 +1140,7 @@ pub fn load_variant_for(
     None
 }
 
-/// Loads the default terminal font (Fira Mono like eDEX, then fallbacks).
+/// Loads the default terminal font (the master's own `face.mono.family`).
 pub fn load_default_mono() -> Font {
     let dirs = font_dirs();
     let mono_path = std::env::var("NACELLE_FONT_MONO").ok().map(PathBuf::from).or_else(|| {
@@ -1154,8 +1154,8 @@ pub fn load_default_mono() -> Font {
     })
 }
 
-/// Loads the default interface font (United Sans like eDEX, then similar
-/// "technical" typefaces; falls back to the monospace font).
+/// Loads the default interface font (the master's own `face.ui.family`;
+/// falls back to the monospace font).
 pub fn load_default_ui() -> Font {
     let dirs = font_dirs();
     let ui_path = std::env::var("NACELLE_FONT_UI").ok().map(PathBuf::from).or_else(|| {

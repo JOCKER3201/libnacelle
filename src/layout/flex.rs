@@ -26,7 +26,7 @@
 use super::instance::{Instance, InstanceList};
 use crate::base::{
     ColumnItem, FlexColumn, FlexLayaut, Layout, LayoutMode, Panel, PanelAnchor, PanelSlot,
-    PanelSpec, Rect, SizeTable, WidgetCategory,
+    PanelSpec, Placed, Rect, SizeTable, WidgetCategory,
 };
 use taffy::prelude::{auto, length, percent};
 use taffy::style::{AvailableSpace, FlexDirection};
@@ -249,7 +249,33 @@ pub fn compute_in(
     t: &SizeTable,
     insts: &[Instance],
 ) -> Layout {
-    match mode {
+    // `draw_screen` probes a board's content size and then lays it out
+    // for real in the SAME frame, with nothing about the window or the
+    // instances changed between the two calls — so the second call
+    // would re-clone the layaut and re-run the taffy solver over the
+    // exact result the first call just produced. One remembered solve,
+    // keyed on everything it actually read; a real change to any of
+    // those still falls straight through and resolves fresh.
+    let kind = match mode {
+        LayoutMode::Flex => Some(ModeKind::Flex),
+        LayoutMode::Rects => Some(ModeKind::Rects),
+        LayoutMode::Custom(_) => None,
+    };
+    let key = kind.map(|k| (k, format!("{insts:?}"), format!("{t:?}")));
+    if let Some((k, id, tb)) = &key {
+        let hit = SOLVE_CACHE.with(|c| {
+            c.borrow().as_ref().and_then(|e| {
+                (e.w == w && e.h == h && e.pad == pad && e.kind == *k
+                    && &e.insts_dbg == id
+                    && &e.table_dbg == tb)
+                    .then(|| e.rebuild(w, h))
+            })
+        });
+        if let Some(out) = hit {
+            return out;
+        }
+    }
+    let out = match mode {
         LayoutMode::Flex => engine(&compose(insts), w, h, pad, t),
         LayoutMode::Custom(fl) => engine(fl, w, h, pad, t),
         LayoutMode::Rects => {
@@ -263,7 +289,56 @@ pub fn compute_in(
                 rect_layout(w, h, &edge_adapt(insts, w / h))
             }
         }
+    };
+    if let Some((kind, insts_dbg, table_dbg)) = key {
+        SOLVE_CACHE.with(|c| {
+            *c.borrow_mut() = Some(SolveCacheEntry {
+                w,
+                h,
+                pad,
+                kind,
+                insts_dbg,
+                table_dbg,
+                placed: out.all().to_vec(),
+            });
+        });
     }
+    out
+}
+
+/// `Flex` and `Rects` are trivially comparable; `Custom` carries a whole
+/// [`FlexLayaut`] with no cheap equality of its own, so it always misses
+/// [`SOLVE_CACHE`] rather than growing one here.
+#[derive(Clone, Copy, PartialEq)]
+enum ModeKind {
+    Flex,
+    Rects,
+}
+
+/// One remembered solve of [`compute_in`]. `Layout` is not `Clone`, so
+/// what is kept is what rebuilds one: the placements themselves.
+struct SolveCacheEntry {
+    w: f32,
+    h: f32,
+    pad: f32,
+    kind: ModeKind,
+    insts_dbg: String,
+    table_dbg: String,
+    placed: Vec<Placed>,
+}
+
+impl SolveCacheEntry {
+    fn rebuild(&self, w: f32, h: f32) -> Layout {
+        let mut out = Layout::empty(w, h);
+        for p in &self.placed {
+            out.place(p.id, p.widget, p.rect);
+        }
+        out
+    }
+}
+
+thread_local! {
+    static SOLVE_CACHE: std::cell::RefCell<Option<SolveCacheEntry>> = std::cell::RefCell::new(None);
 }
 
 fn engine(fl: &FlexLayaut, w: f32, h: f32, pad: f32, t: &SizeTable) -> Layout {
@@ -475,7 +550,16 @@ fn min_outer(it: ColumnItem, h: f32, pad: f32, t: &SizeTable) -> f32 {
 /// with 3793 px of width available.
 fn column_fits(c: &FlexColumn, h: f32, pad: f32, span: f32, t: &SizeTable) -> bool {
     let need: f32 = c.panels.iter().map(|it| min_outer(*it, h, pad, t)).sum();
-    need <= span
+    // The same gap accounting stack_heights() does: gaps compete with the
+    // panels for `span` by weight before the minimums are compared, so a
+    // column that "fits" here must still fit once stack_heights() takes
+    // its cut for the gaps between panels.
+    let n = c.panels.len() as f32;
+    let weights: f32 = c.panels.iter().map(|it| it.weight).sum();
+    let total = weights + c.gap * (n - 1.0).max(0.0);
+    let gap_px = c.gap / total.max(0.001) * span;
+    let content_span = span - gap_px * (n - 1.0).max(0.0);
+    need <= content_span
 }
 
 /// Landscape flexbox layout: the columns in a row, solved by taffy.
@@ -669,13 +753,13 @@ fn portrait_flex(fl: &FlexLayaut, w: f32, h: f32, pad: f32, t: &SizeTable) -> La
         (0.25, 0.40, 0.13, 0.16)
     };
 
-    let bot_h = if bots.is_empty() { 0.0 } else { h * bot_f };
+    let mut bot_h = if bots.is_empty() { 0.0 } else { h * bot_f };
     // A bar panel is ALWAYS its own full-width band in portrait, between
     // the row and the bottom band — never inside a chunk, where the two
     // control buttons took 41 % of the row's height and crushed the
     // instruments.
-    let bar_h = if bars.is_empty() { 0.0 } else { h * bar_f };
-    let row_h = if has_row {
+    let mut bar_h = if bars.is_empty() { 0.0 } else { h * bar_f };
+    let mut row_h = if has_row {
         if !tops.is_empty() {
             h * row_f
         } else {
@@ -694,12 +778,27 @@ fn portrait_flex(fl: &FlexLayaut, w: f32, h: f32, pad: f32, t: &SizeTable) -> La
     };
 
     let mut used = 0.0;
+    let mut bands = 0.0;
     for ph in [bot_h, row_h, bar_h] {
         if ph > 0.0 {
             used += ph + gap;
+            bands += 1.0;
         }
     }
     let top_h = (h - 2.0 * gap - used).max(h * 0.2);
+    if !tops.is_empty() && top_h > h - 2.0 * gap - used {
+        // The floor left less room than the row/bar/bottom bands need:
+        // shrink them together instead of letting the row spill into the
+        // bands below it — the re-proportioning this function promises,
+        // not a top band bought at the row's expense.
+        let s = bot_h + row_h + bar_h;
+        if s > 0.0 {
+            let k = (h - (2.0 + bands) * gap - top_h).max(0.0) / s;
+            bot_h *= k;
+            row_h *= k;
+            bar_h *= k;
+        }
+    }
 
     // The top band at the very top.
     let mut y = gap;

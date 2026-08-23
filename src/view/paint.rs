@@ -21,6 +21,7 @@ use crate::theme::Color;
 use crate::ui::{sev_of, Align, BadgeStyle, Case, Sev, SEVERITY_ROLES};
 use crate::Rect;
 use std::borrow::Cow;
+use std::sync::OnceLock;
 
 // ------------------------------------------------------------- severity
 
@@ -38,24 +39,56 @@ fn sev_role(s: Sev) -> &'static str {
     SEVERITY_ROLES[(s.0 as usize).min(SEVERITY_ROLES.len() - 1)]
 }
 
+/// The `severity.<role>.{text,edge,fill,on}` key names, written out ONCE
+/// per role and indexed thereafter — the same rung [`crate::ui::sev_tok`]
+/// stops at with a `TokenId`, kept here as STRINGS because a `Surface`
+/// may be the far side of the plugin ABI, where a `TokenId` means
+/// nothing. `sev_text` and its three siblings used to rebuild their key
+/// with `format!` on every call, which is the token-naming cost this
+/// file's own header says a view pays ONCE per draw and never inside a
+/// row loop.
+struct SevKeys {
+    text: String,
+    edge: String,
+    fill: String,
+    on: String,
+}
+
+fn sev_keys(s: Sev) -> &'static SevKeys {
+    static KEYS: OnceLock<Vec<SevKeys>> = OnceLock::new();
+    let all = KEYS.get_or_init(|| {
+        SEVERITY_ROLES
+            .iter()
+            .copied()
+            .map(|role| SevKeys {
+                text: format!("severity.{role}.text"),
+                edge: format!("severity.{role}.edge"),
+                fill: format!("severity.{role}.fill"),
+                on: format!("severity.{role}.on"),
+            })
+            .collect()
+    });
+    &all[(s.0 as usize).min(all.len() - 1)]
+}
+
 /// The ink a severity writes in — the label, the value, the status word.
 pub fn sev_text(sf: &mut impl Surface, s: Sev) -> Color {
-    sf.color(&format!("severity.{}.text", sev_role(s)))
+    sf.color(&sev_keys(s).text)
 }
 
 /// The hairline a severity draws around a hollow pill.
 pub fn sev_edge(sf: &mut impl Surface, s: Sev) -> Color {
-    sf.color(&format!("severity.{}.edge", sev_role(s)))
+    sf.color(&sev_keys(s).edge)
 }
 
 /// The bed a severity fills a hollow pill with.
 pub fn sev_fill(sf: &mut impl Surface, s: Sev) -> Color {
-    sf.bed(&format!("severity.{}.fill", sev_role(s)))
+    sf.bed(&sev_keys(s).fill)
 }
 
 /// The ink that reads ON a severity's solid fill.
 pub fn sev_on(sf: &mut impl Surface, s: Sev) -> Color {
-    sf.color(&format!("severity.{}.on", sev_role(s)))
+    sf.color(&sev_keys(s).on)
 }
 
 // ----------------------------------------------------------- type roles

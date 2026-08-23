@@ -234,7 +234,16 @@ impl LayautStore {
         insts: &mut InstanceList,
     ) -> std::io::Result<()> {
         let dir = self.roots.ensure("layauts")?;
-        let text = self.read_text(name).unwrap_or_default();
+        let text = match std::fs::read_to_string(self.user_path(name)) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match self.roots.find("layauts", &format!("{name}.layaut")) {
+                    Some(p) => std::fs::read_to_string(p)?,
+                    None => String::new(),
+                }
+            }
+            Err(e) => return Err(e),
+        };
         let (base, _, _) = layaut::split_raw(&text);
         let def = layaut::parse(&text, name);
         let boards = layaut::normalize_boards(boards, insts);
