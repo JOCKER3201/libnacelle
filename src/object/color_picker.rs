@@ -1,9 +1,14 @@
-//! Colour picker: a two-dimensional field of hue by value, a saturation
-//! bar beside it, the chosen colour as a patch, that same colour written
-//! out in one of six notations, and two grids of ready-made colours.
-//! (The field and the bar traded axes 2026-08-23: the field answered
-//! for saturation and the bar for value until then. The names below
-//! are written for the swap already in force.)
+//! Colour picker: a hue/saturation WHEEL, a value bar beside it, the
+//! chosen colour as a patch, that same colour written out in one of six
+//! notations, and two grids of ready-made colours.
+//! (The field has moved twice in one day. It was a rectangle from
+//! 2026-08-18: hue across, value down, the bar answering for saturation.
+//! 2026-08-23 first traded those two axes — the field took value, the
+//! bar took saturation — and then, later the same day, gave the field up
+//! entirely for a WHEEL: hue swept round the rim, saturation out from
+//! the centre, and the bar handed BACK to value, because saturation now
+//! has a home of its own and a straight bar was never it. The names
+//! below are written for the wheel already in force.)
 //!
 //! WHY AN OBJECT AND NOT A PAGE OF SLIDERS. Until 2026-08-18 a colour in
 //! the theme editor was three sliders — brightness, saturation, hue —
@@ -16,29 +21,49 @@
 //! language and the grid of ready-made colours are this theme's, read
 //! from `[picker]` like everything else in this toolkit.
 //!
-//! THE FIELD IS EXACT, AND THAT IS WHY IT IS TWO CALLS AND NOT A GRID OF
-//! CELLS. HSV's own definition is affine in value:
+//! WHY A WHEEL AND NOT A SQUARE. A rectangular hue-by-saturation field
+//! puts the one axis that reads as "how much colour is this" along a
+//! single edge — full saturation is a sliver a pixel wide at the top,
+//! and a handle spends most of its travel in the muddy two-thirds
+//! nearest the bottom. A disk puts saturation on the RADIUS instead: the
+//! whole rim is "as saturated as this hue gets", at every hue at once,
+//! and the grey axis every hue's spoke actually passes through is one
+//! POINT at the centre rather than a line along an edge — which is also
+//! why a drag can lose its way onto grey without losing which hue it
+//! came from: the centre is a point and not a line, and [`wheel_pick`]'s
+//! dead zone is where that is written down.
+//!
+//! THE WHEEL IS EXACT FOR THE SAME REASON THE OLD FIELD WAS, IN TWO
+//! DIMENSIONS INSTEAD OF ONE. HSV's own definition is affine in
+//! saturation at fixed hue and value:
 //!
 //! ```text
-//! rgb(h, s, v) = v · rgb(h, s, 1)
+//! rgb(h, s, v) = rgb(h, 1, v) · s + grey(v) · (1 − s)
 //! ```
 //!
-//! — black mixed with the fully brightened hue by `v`. So the field is
-//! a horizontal hue ramp drawn at the current saturation, with ONE
-//! two-stop vertical overlay of black whose alpha runs 0 at the top
-//! (fully bright) to 1 at the bottom. The compositor's straight alpha
-//! over encoded values reproduces the line above exactly, which is
-//! what [`field_colour`] and its test assert. Dicing the field into
-//! cells would have been the obvious way and would have banded, cost a
-//! quad per cell, and put a number of cells in Rust that no theme could
-//! have argued with.
+//! — so along any one spoke out from the centre, the colour is an exact
+//! linear function of radius, and [`crate::draw::DrawList::quad_c`]'s Gouraud
+//! interpolation reproduces a linear function exactly on any
+//! triangulation (its own doc says so). The one approximation left is
+//! ACROSS a wedge: `hsv_to_rgb` is only piecewise-affine in hue, with
+//! kinks at the six 60° sector boundaries, so the wheel rounds
+//! `picker.hue_stops` up to a multiple of six and lands a wedge boundary
+//! on every one of them — [`wheel_tessellation`] states the rule and its
+//! test measures it. It is the same trade the old field made between a
+//! smooth ramp and `rect_grad`'s banding, read in two dimensions instead
+//! of one, and it is drawn with [`crate::draw::DrawList::fan_c`] and
+//! [`crate::draw::DrawList::quad_c`], never [`crate::draw::DrawList::rect_grad`]: the wheel's own
+//! triangulation IS its silhouette, so there is nothing to clip a circle
+//! out of a rectangle for.
 //!
-//! THE SATURATION BAR IS EXACT FOR THE SAME REASON: `rgb(h, s, v) = s ·
-//! rgb(h, 1, v) + (1 − s) · grey(v)`, so it is two stops, the colour at
-//! full saturation and grey at the field's own value — never black,
-//! which this axis cannot reach.
+//! THE VALUE BAR IS EXACT FOR THE SAME REASON THE OLD SATURATION ONE
+//! WAS, read at the OTHER axis: `rgb(h, s, v) = v · rgb(h, s, 1)`, black
+//! mixed with the wheel's own current hue-and-saturation by `v` — so it
+//! is two stops, that colour at the top and black at the bottom, and
+//! never the grey saturation's zero would have drawn: value's own zero
+//! is black, and that is the point of the axis.
 //!
-//! HSV AND NOT OKLCh FOR THE FIELD, and the owner ruled on this on
+//! HSV AND NOT OKLCh FOR THE WHEEL, and the owner ruled on this on
 //! 2026-08-16 about the sliders this replaces: brightness at 100 % must
 //! be the FULL BRIGHTNESS OF THE HUE — red lands on #FF0000 — and never
 //! white. OKLCh's lightness at 1.0 is white by definition, which reads
@@ -54,15 +79,15 @@
 //!
 //! THE TRAP THIS FILE IS WRITTEN AROUND. The colour a picker holds is
 //! **sRGB-ENCODED** — that is what a bake hands back, what hex spells and
-//! what the field's arithmetic above is true of. OKLCh is defined over
-//! **LINEAR LIGHT**. Every crossing therefore decodes on the way in
-//! ([`Color::to_linear`]) and encodes on the way back ([`Color::to_srgb`]),
-//! and neither step is optional. The one time this program mixed the two
-//! it did not merely mis-report: the editor seeded itself from what it
-//! had just written, so the accent's lightness climbed 0.8200 → 0.8904 →
-//! 0.9413 → 0.9715 over successive visits with every slider at rest.
-//! `the_notation_survives_twenty_round_trips` is that measurement turned
-//! into a test.
+//! what the wheel's and the bar's arithmetic above are true of. OKLCh is
+//! defined over **LINEAR LIGHT**. Every crossing therefore decodes on the
+//! way in ([`Color::to_linear`]) and encodes on the way back
+//! ([`Color::to_srgb`]), and neither step is optional. The one time this
+//! program mixed the two it did not merely mis-report: the editor seeded
+//! itself from what it had just written, so the accent's lightness
+//! climbed 0.8200 → 0.8904 → 0.9413 → 0.9715 over successive visits with
+//! every slider at rest. `the_notation_survives_twenty_round_trips` is
+//! that measurement turned into a test.
 
 use super::focus_ring;
 use crate::corner::Cuts;
@@ -211,14 +236,88 @@ pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, max)
 }
 
-/// The colour the field shows at `(fx, fy)`, both 0..1 from its top-left,
-/// for a bar standing at saturation `s`.
+/// The colour the bar shows at fraction `fy` down from its top, for a
+/// wheel standing at hue `h` and saturation `s`.
 ///
-/// The one statement of what the field MEANS. The drawing does not call
-/// it — two gradient calls do — and that is the point: this is the
-/// definition the drawing is tested against.
-pub fn field_colour(fx: f32, fy: f32, s: f32) -> (f32, f32, f32) {
-    hsv_to_rgb(fx.clamp(0.0, 1.0) * 360.0, s.clamp(0.0, 1.0), 1.0 - fy.clamp(0.0, 1.0))
+/// The one statement of what the BAR means. Its predecessor `field_colour`
+/// was tested against the black overlay a rectangular field composited
+/// over a hue ramp; this is that same law moved onto value, which is
+/// what the bar draws now that the field is a wheel and saturation is
+/// its radius. The drawing does not call it — [`crate::draw::DrawList::rect_grad`]
+/// draws the bar from its own two stops — and that is the point: this
+/// is the definition the drawing is tested against.
+pub fn bar_colour(h: f32, s: f32, fy: f32) -> (f32, f32, f32) {
+    hsv_to_rgb(h, s, 1.0 - fy.clamp(0.0, 1.0))
+}
+
+/// Where the wheel's handle sits for (hue°, sat), as a 0..1 fraction of
+/// the wheel's own bounding square, top-left origin — the same contract
+/// [`Picker::field_at`] has always had, so `draw()`'s handle-placement
+/// arithmetic did not have to change when the field did.
+///
+/// Hue 0° sits at 3 o'clock (`+x`) and increasing hue sweeps toward `+y`
+/// — which reads as CLOCKWISE on screen, since screen y is down. That is
+/// an arbitrary choice and now a fixed one; what matters is only that it
+/// is the exact inverse of [`wheel_pick`] outside the dead zone at the
+/// centre, which is what round-tripping through the two needs and all
+/// they promise.
+pub fn wheel_point(hue_deg: f32, sat: f32) -> (f32, f32) {
+    let r = hue_deg.to_radians();
+    let s = sat.clamp(0.0, 1.0);
+    (0.5 + 0.5 * s * r.cos(), 0.5 + 0.5 * s * r.sin())
+}
+
+/// The inverse of [`wheel_point`]: a press or a drag at local-fractional
+/// `(fx, fy)` becomes `(hue°, sat)`. `keep_hue` is the caller's own
+/// current hue, read only inside the dead zone at the centre.
+///
+/// CLAMPED, NEVER REJECTED. `fx`/`fy` are not pre-clamped to 0..1 by any
+/// caller in this file — a drag can wander arbitrarily far outside the
+/// wheel's own bounding square — so the radius `r_norm` this computes can
+/// exceed 1.0 for an overshoot. `atan2` is exact for any nonzero
+/// `(dx, dy)` however large, so hue keeps tracking a drag that has left
+/// the wheel altogether; saturation is simply pinned at its rim with
+/// `.min(1.0)`. That is the standard picker feel — a drag that overshoots
+/// keeps steering by angle and stops climbing in vividness — and it costs
+/// no branch beyond the one `.min` already visible below.
+///
+/// THE DEAD ZONE IS THE WHEEL'S OWN VERSION OF "A DRAG ONTO THE GREY AXIS
+/// KEEPS THE HUE IT CAME FROM". Below `r_norm = 1e-4`, `atan2(0, 0)` has
+/// no angle to give, so hue is left exactly where the caller already had
+/// it rather than asked of a coordinate pair with nothing left to answer
+/// with — the same POLICY the old rectangular field's bottom edge used to
+/// carry, now living at one point instead of along one edge.
+pub fn wheel_pick(fx: f32, fy: f32, keep_hue: f32) -> (f32, f32) {
+    let (dx, dy) = (fx - 0.5, fy - 0.5);
+    let r_norm = (dx * dx + dy * dy).sqrt() / 0.5;
+    let sat = r_norm.min(1.0);
+    let hue = if r_norm > 1e-4 {
+        dy.atan2(dx).to_degrees().rem_euclid(360.0)
+    } else {
+        keep_hue
+    };
+    (hue, sat)
+}
+
+/// How many wedges and how many rings the wheel is cut into, from
+/// `picker.hue_stops` (`n`, already clamped to 2..64 by the caller).
+///
+/// WEDGES ARE `n` ROUNDED UP TO A MULTIPLE OF SIX, FLOORED AT SIX, so a
+/// wedge boundary always lands on one of `hsv_to_rgb`'s six 60° sector
+/// kinks — the one place the cross term between hue and saturation
+/// inside a wedge is exactly zero, which removes a whole source of
+/// tessellation error for the cost of rounding a number that was already
+/// approximate. RINGS ARE A THIRD OF THE WEDGE COUNT, CLAMPED 4..16:
+/// radial interpolation inside a ring is exact regardless of how many
+/// there are (HSV is affine in saturation at fixed hue), so the ring
+/// count only has to be enough that the one approximation left — the
+/// cross term across a wedge's own angular width — shrinks with both the
+/// radial step and the angular one, without spending vertices nobody
+/// asked for on an axis that was already exact.
+fn wheel_tessellation(n: usize) -> (usize, usize) {
+    let wedges = n.max(1).div_ceil(6) * 6;
+    let rings = (wedges / 3).clamp(4, 16);
+    (wedges, rings)
 }
 
 fn q8(v: f32) -> u8 {
@@ -478,29 +577,51 @@ impl Picker {
         self.set_colour(Color::from_oklch(v).to_srgb());
     }
 
-    /// The field's handle, 0..1 from the field's top-left. Hue across,
-    /// VALUE down (2026-08-23: was saturation — the bar answers for that
-    /// now, so the two controls do not both move the same axis).
+    /// The hue the field is standing on, on its own — what
+    /// `a_drag_onto_the_grey_axis_keeps_the_hue_it_came_from` asks the
+    /// wheel about directly rather than reverse-engineering it out of a
+    /// 2-D point. THE HUE IS KEPT, NOT DERIVED, is this module's header's
+    /// own claim, and a struct that makes good on that claim ought to
+    /// say so through an accessor and not only through [`field_at`]'s
+    /// arithmetic.
+    ///
+    /// [`field_at`]: Picker::field_at
+    pub fn hue(&self) -> f32 {
+        self.hsv[0]
+    }
+
+    /// The wheel's handle, 0..1 from the wheel's own top-left — exactly
+    /// [`wheel_point`], which is this method's whole body. Kept as a
+    /// method and not inlined at the one call site because `draw()` and
+    /// this file's tests both need the same two numbers from the same
+    /// two of `hsv`'s three, and a caller reading `field_at()` should not
+    /// have to know which two those are.
     pub fn field_at(&self) -> (f32, f32) {
-        (self.hsv[0].rem_euclid(360.0) / 360.0, 1.0 - self.hsv[2])
+        wheel_point(self.hsv[0], self.hsv[1])
     }
 
-    /// The bar's handle, 0..1 from its top (saturated) to its bottom
-    /// (grey). Was VALUE (bright to black) until 2026-08-23; the name
-    /// stayed — it names the CONTROL, the bar, not the channel it moves.
+    /// The bar's handle, 0..1 from its top (bright) to its bottom
+    /// (black) — VALUE, the name's original meaning, restored the same
+    /// day it left: saturation now lives in the wheel's own radius, so
+    /// the bar has exactly one axis left to answer for and this is it.
     pub fn value_at(&self) -> f32 {
-        1.0 - self.hsv[1]
+        1.0 - self.hsv[2]
     }
 
-    /// A press or a drag inside the field: hue from x, VALUE from y.
+    /// A press or a drag inside the wheel: hue from angle, saturation
+    /// from radius, exactly [`wheel_pick`] — the field's own hue is what
+    /// the dead zone at the centre falls back to, so a hand that lands
+    /// exactly on grey does not swing the handle to whatever `atan2`
+    /// makes of `(0, 0)`.
     pub fn pick_field(&mut self, fx: f32, fy: f32) {
-        self.hsv[0] = fx.clamp(0.0, 1.0) * 360.0;
-        self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
+        let (h, s) = wheel_pick(fx, fy, self.hsv[0]);
+        self.hsv[0] = h;
+        self.hsv[1] = s;
     }
 
-    /// A press or a drag along the bar: SATURATION from y.
+    /// A press or a drag along the bar: VALUE from y.
     pub fn pick_value(&mut self, fy: f32) {
-        self.hsv[1] = 1.0 - fy.clamp(0.0, 1.0);
+        self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
     }
 
     /// The colour as text, in the notation in force.
@@ -701,8 +822,22 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
     let band = area.w.max(0.0);
     let value_w = m.value_w.min(band);
     let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
-    let field_w = (left_w - m.gap - value_w).max(0.0);
-    let field = Rect::new(area.x, area.y, field_w, m.field_h);
+    // THE WHEEL IS A CIRCLE INSCRIBED IN THE SAME BOX THE OLD RECTANGULAR
+    // FIELD FILLED, centred rather than stretched to it: a disk stretched
+    // to a box that is not square would draw an ellipse, and an ellipse
+    // is not a hue wheel, it is a hue wheel that has been sat on. The box
+    // itself is unchanged — same width, same `m.field_h` — so nothing
+    // downstream that reasons about the BOX (`right_h`, `strip_y`) has to
+    // change; only what is drawn inside it shrank to a square.
+    let box_w = (left_w - m.gap - value_w).max(0.0);
+    let box_h = m.field_h;
+    let diameter = box_w.min(box_h).max(0.0);
+    let field = Rect::new(
+        area.x + (box_w - diameter) / 2.0,
+        area.y + (box_h - diameter) / 2.0,
+        diameter,
+        diameter,
+    );
     // The bar is hung from the RIGHT of the left column rather than from
     // the field's edge. With room the two are the same point to the last
     // bit; without it, this one is still inside the band.
@@ -854,6 +989,36 @@ fn frame(ctx: &mut Ctx, r: Rect) {
     );
 }
 
+/// A full circle inscribed in `r`, the corner language every OTHER part
+/// of this control reads from `picker.corner_style`/`picker.corner`
+/// deliberately overridden here: a chamfered or square-cornered ring
+/// drawn over a disk is not a second look this control could wear, it is
+/// the wheel's own boundary drawn wrong. `r.w.min(r.h)` rather than
+/// assuming square — the wheel is always square by construction
+/// ([`layout_with`]), but a shape helper that only works on its one
+/// caller's own invariant is a trap for the next one.
+fn ring_shape(r: Rect) -> ([Corner; 4], f32) {
+    let radius = r.w.min(r.h) * 0.5;
+    ([Corner::round(radius); 4], radius)
+}
+
+/// The wheel's own frame: [`ring_shape`]'s circle, [`frame`]'s ring.
+fn wheel_frame(ctx: &mut Ctx, r: Rect) {
+    static BORDER: OnceLock<TokenId> = OnceLock::new();
+    static EDGE: OnceLock<TokenId> = OnceLock::new();
+    static SEGMENTS: OnceLock<TokenId> = OnceLock::new();
+    let t = theme::resolved();
+    let (c, radius) = ring_shape(r);
+    let seg = super::window::corner_segments(t, &SEGMENTS, radius);
+    ctx.dl.ring(
+        r,
+        &c,
+        seg,
+        t.px(tok(&BORDER, "picker.border")),
+        col(t.color(tok(&EDGE, "component.picker.edge"))),
+    );
+}
+
 /// The handle that marks a chosen point: a ring, because a filled mark
 /// would hide the very colour it is pointing at.
 fn handle(ctx: &mut Ctx, at: Rect) {
@@ -861,6 +1026,28 @@ fn handle(ctx: &mut Ctx, at: Rect) {
     static INK: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
     let (c, seg) = shape(t, at);
+    ctx.dl.ring(
+        at,
+        &c,
+        seg,
+        t.px(tok(&STROKE, "picker.handle_stroke")),
+        col(t.color(tok(&INK, "component.picker.handle"))),
+    );
+}
+
+/// The wheel's own handle: forced round, like [`wheel_frame`] — a
+/// square or chamfered marker sitting on a disk would be the one corner
+/// language in the whole control that visibly disagreed with the shape
+/// under it. The bar's handle is unchanged: a straight track wears
+/// whatever corner language the rest of the control does, because a
+/// track is not a shape a handle could visibly disagree with.
+fn wheel_handle(ctx: &mut Ctx, at: Rect) {
+    static STROKE: OnceLock<TokenId> = OnceLock::new();
+    static INK: OnceLock<TokenId> = OnceLock::new();
+    static SEGMENTS: OnceLock<TokenId> = OnceLock::new();
+    let t = theme::resolved();
+    let (c, radius) = ring_shape(at);
+    let seg = super::window::corner_segments(t, &SEGMENTS, radius);
     ctx.dl.ring(
         at,
         &c,
@@ -879,58 +1066,84 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
     static ROLE: OnceLock<TokenId> = OnceLock::new();
     static TEXT_INK: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
-    // Read straight off the field: `value_at()` names the BAR now, not
-    // this channel (2026-08-23's swap), and using it here would read the
-    // bar's own axis (saturation) as if it were value.
+    // Read straight off the model: value is `hsv`'s own third coordinate,
+    // and the wheel below bakes it into every ring it draws — there is no
+    // second control to misread it off any more, the way the bar briefly
+    // was between the two swaps this file's header records.
     let v = p.hsv[2];
 
-    // ---- the field: one hue ramp at the bar's saturation, one black
-    // overlay for value. `picker.hue_stops` is how finely the circle is
-    // sampled, and it is the theme's number because it is a trade between
-    // a smooth ramp and the bands `rect_grad` cuts between stops.
+    // ---- the wheel: hue swept round the rim, saturation out from the
+    // centre, at the bar's own value — one fan for the inner cap, one
+    // quad per ring-and-wedge cell for the rest, NEVER `rect_grad`: the
+    // wheel's own triangulation is exactly its silhouette, so there is
+    // nothing to clip and no `push_clip`/`pop_clip` pair to bracket it in.
+    // `picker.hue_stops` is how finely the circle is sampled, no longer a
+    // metaphor now that the field IS one; [`wheel_tessellation`] is where
+    // it becomes a wedge count and a ring count, and the module header
+    // is where the kink-alignment that buys is argued.
     let n = (t.px(tok(&HUE_STOPS, "picker.hue_stops")).round() as usize).clamp(2, 64);
-    let stops: Vec<(f32, Color)> = (0..=n)
-        .map(|i| {
-            let f = i as f32 / n as f32;
-            let (r, g, b) = hsv_to_rgb(f * 360.0, p.hsv[1], 1.0);
-            (f, Color { r, g, b, a: 1.0 })
-        })
-        .collect();
-    ctx.dl.push_clip(l.field.x, l.field.y, l.field.w, l.field.h);
-    ctx.dl.rect_grad(l.field, &stops, 0.0);
-    // Uniformly scaling RGB toward black is exactly HSV's V shrinking with
-    // H and S held fixed, so a black overlay whose alpha runs 0 at the top
-    // to 1 at the bottom is value, drawn without a second pass over hue.
-    let black0 = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
-    ctx.dl.rect_grad(
-        l.field,
-        &[(0.0, black0), (1.0, Color { a: 1.0, ..black0 })],
-        std::f32::consts::FRAC_PI_2,
-    );
-    ctx.dl.pop_clip();
-    frame(ctx, l.field);
+    let (wedges, rings) = wheel_tessellation(n);
+    let cx = l.field.x + l.field.w / 2.0;
+    let cy = l.field.y + l.field.h / 2.0;
+    let radius = l.field.w.min(l.field.h) / 2.0;
+    let point = |ring: usize, wedge: usize| {
+        let rho = ring as f32 / rings as f32;
+        let theta = (wedge as f32 * 360.0 / wedges as f32).to_radians();
+        [cx + radius * rho * theta.cos(), cy + radius * rho * theta.sin()]
+    };
+    let colour = |ring: usize, wedge: usize| {
+        let rho = ring as f32 / rings as f32;
+        let theta = wedge as f32 * 360.0 / wedges as f32;
+        let (r, g, b) = hsv_to_rgb(theta, rho, v);
+        Color { r, g, b, a: 1.0 }
+    };
+    // The cap: ring 0 collapsed to the centre point itself, grey at the
+    // field's value because saturation 0 has no hue to disagree about —
+    // `fan_c`'s own contract closes the rim (wedge `wedges-1` joins
+    // wedge 0), which is exactly a full 360° sweep with no seam to name.
+    let rim: Vec<[f32; 2]> = (0..wedges).map(|w| point(1, w)).collect();
+    let rim_c: Vec<Color> = (0..wedges).map(|w| colour(1, w)).collect();
+    ctx.dl.fan_c([cx, cy], &rim, Color { r: v, g: v, b: v, a: 1.0 }, &rim_c);
+    // The rest: one quad per cell between ring `k` and ring `k+1`, exact
+    // along the radius by construction (HSV is affine in saturation at
+    // fixed hue) and exact across a wedge wherever that wedge's own two
+    // edges sit on one of `hsv_to_rgb`'s six 60° kinks, which `wedges`
+    // being a multiple of six guarantees for every one of them.
+    for ring in 1..rings {
+        for w in 0..wedges {
+            let w2 = (w + 1) % wedges;
+            ctx.dl.quad_c(
+                [point(ring, w), point(ring, w2), point(ring + 1, w2), point(ring + 1, w)],
+                [colour(ring, w), colour(ring, w2), colour(ring + 1, w2), colour(ring + 1, w)],
+            );
+        }
+    }
+    wheel_frame(ctx, l.field);
 
-    // ---- the bar: the chosen hue at full saturation and the field's
-    // value, down to grey at that same value — never black, which was
-    // the value bar's picture and would draw a colour this axis cannot
-    // reach (saturation 0 is grey, not the absence of light).
-    let (hr, hg, hb) = hsv_to_rgb(p.hsv[0], 1.0, v);
+    // ---- the bar: value, down to black — restored the same day it left,
+    // now that saturation is the wheel's own radius and the bar has
+    // exactly one axis left. `p.hsv[1]` and not `1.0` in the top stop:
+    // the bar shows THIS colour's own saturation fading to black, not
+    // every hue's own maximum, which is what the wheel is for.
+    let (hr, hg, hb) = hsv_to_rgb(p.hsv[0], p.hsv[1], 1.0);
     ctx.dl.rect_grad(
         l.value,
         &[
             (0.0, Color { r: hr, g: hg, b: hb, a: 1.0 }),
-            (1.0, Color { r: v, g: v, b: v, a: 1.0 }),
+            (1.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
         ],
         std::f32::consts::FRAC_PI_2,
     );
     frame(ctx, l.value);
 
-    // ---- the two handles.
+    // ---- the two handles: the wheel's forced round (a marker matches
+    // the disk it stands on), the bar's own themed shape (a track is not
+    // a shape a handle could visibly disagree with).
     let hr_px = t.px(tok(&HANDLE_R, "picker.handle"));
     let (fx, fy) = p.field_at();
     let hx = l.field.x + fx * l.field.w;
     let hy = l.field.y + fy * l.field.h;
-    handle(ctx, Rect::new(hx - hr_px, hy - hr_px, hr_px * 2.0, hr_px * 2.0));
+    wheel_handle(ctx, Rect::new(hx - hr_px, hy - hr_px, hr_px * 2.0, hr_px * 2.0));
     let vy = l.value.y + p.value_at() * l.value.h;
     handle(
         ctx,
@@ -1233,46 +1446,135 @@ mod tests {
     }
 
     #[test]
-    fn the_field_is_what_the_two_gradients_draw() {
-        // The value line the drawing stands on: black laid over the hue
-        // at full brightness by alpha 1-v IS hsv(h, s, v).
-        for &v in &[0.25f32, 0.6, 1.0] {
-            for &s in &[0.0f32, 0.35, 1.0] {
-                for &h in &[0.0f32, 95.0, 210.0, 359.0] {
-                    let (r, g, b) = hsv_to_rgb(h, s, v);
-                    let (fr, fg, fb) = field_colour(h / 360.0, 1.0 - v, s);
-                    approx(fr, r, 1e-5, "field red");
-                    approx(fg, g, 1e-5, "field green");
-                    approx(fb, b, 1e-5, "field blue");
-                    // What the compositor computes: base·v + black·(1−v).
-                    let (br, _, _) = hsv_to_rgb(h, s, 1.0);
-                    approx(br * v, r, 1e-5, "overlay red");
+    fn the_bar_is_what_its_gradient_draws() {
+        // The value line the module header states, `rgb(h, s, v) = v ·
+        // rgb(h, s, 1)`, read as `bar_colour` reads it — value shrinking
+        // toward BLACK at fixed hue and saturation, which is what moved
+        // onto the bar the day saturation moved onto the wheel.
+        for &s in &[0.0f32, 0.35, 1.0] {
+            for &h in &[0.0f32, 95.0, 210.0, 359.0] {
+                for &fy in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                    let (r, g, b) = hsv_to_rgb(h, s, 1.0 - fy);
+                    let (br, bg, bb) = bar_colour(h, s, fy);
+                    approx(br, r, 1e-5, "bar red");
+                    approx(bg, g, 1e-5, "bar green");
+                    approx(bb, b, 1e-5, "bar blue");
                 }
+            }
+        }
+        // THE BOTTOM IS BLACK AND NOT GREY, NAMED. Saturation's own zero
+        // used to be this axis's bottom and that is grey, not the
+        // absence of light — the very confusion the module header's
+        // "VALUE BAR IS EXACT" paragraph turns on. Value's zero is black,
+        // whatever the saturation, and that is checked here directly
+        // rather than left to fall out of the loop above.
+        for &s in &[0.0f32, 0.6, 1.0] {
+            let (r, g, b) = bar_colour(140.0, s, 1.0);
+            approx(r, 0.0, 1e-6, "bar bottom is black");
+            approx(g, 0.0, 1e-6, "bar bottom is black");
+            approx(b, 0.0, 1e-6, "bar bottom is black");
+        }
+    }
+
+    #[test]
+    fn wheel_point_and_wheel_pick_are_exact_inverses_off_the_centre() {
+        //! [`wheel_point`] places the handle, [`wheel_pick`] reads a
+        //! press back into hue and saturation — a picker whose handle
+        //! drifted from the point a press landed on would be lying about
+        //! where it is standing, one drag at a time.
+        for &s in &[0.02f32, 0.2, 0.5, 0.9, 1.0] {
+            for &h in &[0.0f32, 12.0, 90.0, 179.9, 271.0, 359.9] {
+                let (fx, fy) = wheel_point(h, s);
+                // A hue the dead zone would never itself answer with, so
+                // a wrong fallback into it cannot pass by accident.
+                let (h2, s2) = wheel_pick(fx, fy, -1.0);
+                approx(h2, h, 1e-2, &format!("hue round-trip at h={h} s={s}"));
+                approx(s2, s, 1e-5, &format!("sat round-trip at h={h} s={s}"));
             }
         }
     }
 
     #[test]
+    fn wheel_pick_clamps_an_overshoot_and_keeps_hue_in_the_dead_zone() {
+        //! CLAMPED, NEVER REJECTED: a drag that leaves the wheel's own
+        //! bounding square still answers, pinned to the rim rather than
+        //! refused — the standard picker feel, and [`wheel_pick`]'s own
+        //! doc states it as the reason `fx`/`fy` are not pre-clamped
+        //! before this call.
+        let (h, s) = wheel_pick(0.5 + 4.0, 0.5, 999.0); // four diameters out, due east
+        approx(h, 0.0, 1e-3, "an overshoot keeps steering by angle");
+        approx(s, 1.0, 1e-6, "an overshoot pins saturation at the rim");
+        // The dead zone at the exact centre answers with the hue it was
+        // handed rather than inventing one out of `atan2(0, 0)`, which
+        // has no angle to give — the wheel's own version of the rule
+        // `a_drag_onto_the_grey_axis_keeps_the_hue_it_came_from` states
+        // for the whole control below.
+        let (h0, s0) = wheel_pick(0.5, 0.5, 123.0);
+        approx(h0, 123.0, 1e-6, "the dead zone keeps the hue it was given");
+        approx(s0, 0.0, 1e-6, "the centre is zero saturation");
+    }
+
+    #[test]
     fn a_drag_onto_the_grey_axis_keeps_the_hue_it_came_from() {
-        // The field no longer answers for saturation (2026-08-23) — the
-        // bar does — so the drag that can zero saturation out and land
-        // on the true grey axis is now on the bar, not the field.
+        // The wheel's own dead zone (2026-08-23, `wheel_pick`) is where a
+        // hand can land exactly on grey — its centre — without the
+        // field forgetting which hue it stood on, so this drives the
+        // invariant through the wheel and [`Picker::hue`] rather than
+        // through the bar's `pick_value`, which is what used to zero
+        // saturation out while the bar still answered for that axis.
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        let fx = p.field_at().0;
-        p.pick_value(1.0); // saturation to nothing
-        assert_eq!(p.colour().r, p.colour().b, "the grey axis is grey");
-        let fx2 = p.field_at().0;
-        approx(fx2, fx, 1e-6, "the hue handle stayed where the hand left it");
+        let hue = p.hue();
+        p.pick_field(0.5, 0.5); // the wheel's own centre: saturation to nothing
+        assert_eq!(p.colour().r, p.colour().b, "the centre is grey");
+        approx(p.hue(), hue, 1e-6, "the hue handle stayed where the hand left it");
         // AND IT SURVIVES A RE-SEED, which is the road this actually
         // happens on: the editor reads the theme back into its controls
         // on every visit, and a grey read back in has no hue to give.
         let grey = p.colour();
         p.set_colour(grey);
-        let fx3 = p.field_at().0;
-        approx(fx3, fx, 1e-6, "a re-seed off a grey kept the hue");
-        // And coming back off the axis returns the same hue.
-        p.pick_value(0.0);
+        approx(p.hue(), hue, 1e-6, "a re-seed off a grey kept the hue");
+        // And coming back off the centre, at the SAME hue and full
+        // saturation, returns the same hue.
+        let (fx, fy) = wheel_point(hue, 1.0);
+        p.pick_field(fx, fy);
         approx(p.oklch().h, Picker::of(Color::rgb8(0x00, 0xFF, 0xB0)).oklch().h, 40.0, "hue");
+    }
+
+    #[test]
+    fn the_field_is_a_square_centred_in_the_box_the_old_rectangle_filled() {
+        //! `layout_with`'s own note: the BOX is unchanged from the old
+        //! rectangular field's — same width, same `picker.field_h` — and
+        //! only what is drawn inside it shrank to a circle's own square,
+        //! centred rather than stretched to the box, so a wheel never
+        //! reads as an ellipse. Recomputed from [`Metrics`] independently
+        //! of `layout_with`'s own arithmetic, the way this file's other
+        //! layout tests already check a public reader against a value
+        //! worked out from the theme rather than only against itself.
+        let m = Metrics::read();
+        for w in [520.0f32, 400.0, 300.0, 150.0] {
+            let area = Rect::new(30.0, 40.0, w, 0.0);
+            let l = layout(area, 0);
+            let band = area.w.max(0.0);
+            let value_w = m.value_w.min(band);
+            let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
+            let box_w = (left_w - m.gap - value_w).max(0.0);
+            let box_h = m.field_h;
+            let diameter = box_w.min(box_h).max(0.0);
+            approx(l.field.w, diameter, 1e-4, &format!("field width at band {w}"));
+            approx(l.field.h, diameter, 1e-4, &format!("field height at band {w}"));
+            approx(
+                l.field.x,
+                area.x + (box_w - diameter) / 2.0,
+                1e-3,
+                &format!("field is centred horizontally in its box at band {w}"),
+            );
+            approx(
+                l.field.y,
+                area.y + (box_h - diameter) / 2.0,
+                1e-3,
+                &format!("field is centred vertically in its box at band {w}"),
+            );
+        }
     }
 
     #[test]
@@ -1448,65 +1750,95 @@ mod tests {
     }
 
     #[test]
-    fn the_field_the_two_gradients_emit_is_the_field_the_reference_states() {
-        //! `the_field_is_what_the_two_gradients_draw` above checks the
-        //! ARITHMETIC of the value line; this checks the CALLS. The
-        //! drawing does not use `field_colour`, so nothing tied the two
-        //! together: a hue ramp emitted at the wrong saturation, or an
-        //! overlay whose alpha ran the wrong way, would have left every
-        //! test above green.
+    fn the_wheel_the_drawing_emits_is_the_wheel_the_reference_states() {
+        //! `the_bar_is_what_its_gradient_draws` above checks the
+        //! ARITHMETIC of the value line; this checks the CALLS the wheel
+        //! makes. There is no `wheel_colour` reference function the way
+        //! there was a `field_colour` — the wheel's law is `hsv_to_rgb`
+        //! directly, at the ring's own radius fraction and the wedge's
+        //! own angle — so this recomputes exactly that and checks every
+        //! vertex the fan and the quads actually emitted against it: a
+        //! wedge read at the wrong angle, a ring at the wrong radius, or
+        //! `v` picked up from the wrong place would have left every
+        //! arithmetic-only test above green.
         //!
-        //! WHAT THIS STILL DOES NOT REACH, said plainly. Compositing the
-        //! two stops here is arithmetic on the values that were HANDED
-        //! OUT; that the compositor blends straight alpha over ENCODED
-        //! values — and not in linear light — is the renderer's promise,
-        //! it lives in another repository, and no test in this one can
-        //! stand in for it. If that promise breaks, the field is wrong on
-        //! screen with every assertion in this file passing.
+        //! WHAT THIS STILL DOES NOT REACH, said plainly, same as its
+        //! predecessor: these are the vertices HANDED OUT: that Gouraud
+        //! interpolation reproduces a linear function exactly between
+        //! them is the renderer's promise (`quad_c`'s own doc), it lives
+        //! in another repository, and no test in this one can stand in
+        //! for it. If that promise breaks, the wheel is wrong on screen
+        //! with every assertion in this file passing.
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::recording();
         let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0);
         let p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        let s = 1.0 - p.value_at(); // `value_at` names the bar now: saturation.
+        let hue_stops = theme::resolved().px(theme::id("picker.hue_stops").expect("declared"));
+        let (wedges, rings) = wheel_tessellation((hue_stops.round() as usize).clamp(2, 64));
         draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[]);
-        let grads: Vec<(Vec<(f32, Color)>, f32)> = dl
+        let cx = l.field.x + l.field.w / 2.0;
+        let cy = l.field.y + l.field.h / 2.0;
+        let radius = l.field.w.min(l.field.h) / 2.0;
+        let want = |ring: usize, wedge: usize| -> ([f32; 2], Color) {
+            let rho = ring as f32 / rings as f32;
+            let theta_deg = wedge as f32 * 360.0 / wedges as f32;
+            let (r, g, b) = hsv_to_rgb(theta_deg, rho, p.hsv[2]);
+            let theta = theta_deg.to_radians();
+            (
+                [cx + radius * rho * theta.cos(), cy + radius * rho * theta.sin()],
+                Color { r, g, b, a: 1.0 },
+            )
+        };
+        // ---- the cap: one fan, one point per wedge, closed by fan_c's
+        // own contract — checked against the reference at ring 1, which
+        // is the rim the cap's own wedge triangles reach out to.
+        let fans: Vec<([f32; 2], Color, Vec<([f32; 2], Color)>)> = dl
             .cmds()
             .iter()
             .filter_map(|c| match c {
-                DrawCmd::RectGrad { r, stops, angle }
-                    if (r[0] - l.field.x).abs() < 1e-3 && (r[1] - l.field.y).abs() < 1e-3 =>
-                {
-                    Some((stops.clone(), *angle))
-                }
+                DrawCmd::FanC { centre, c_centre, rim } => Some((*centre, *c_centre, rim.clone())),
                 _ => None,
             })
             .collect();
-        assert_eq!(grads.len(), 2, "the field is a hue ramp and one overlay");
-        let (hue, hue_angle) = &grads[0];
-        let (over, over_angle) = &grads[1];
-        approx(*hue_angle, 0.0, 1e-6, "the hue runs across");
-        approx(*over_angle, std::f32::consts::FRAC_PI_2, 1e-6, "the overlay runs down");
-        assert_eq!(over.len(), 2, "the overlay is two stops and not a dice of cells");
-        approx(over[0].1.a, 0.0, 1e-6, "the top of the field is fully bright");
-        approx(over[1].1.a, 1.0, 1e-6, "the bottom of it is black");
-        // At a stop the ramp IS its stop, so the composite can be put
-        // against the reference with no interpolation in between.
-        for (fx, base) in hue.iter() {
-            for &fy in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
-                let grey = Color {
-                    r: over[0].1.r + (over[1].1.r - over[0].1.r) * fy,
-                    g: over[0].1.g + (over[1].1.g - over[0].1.g) * fy,
-                    b: over[0].1.b + (over[1].1.b - over[0].1.b) * fy,
-                    a: over[0].1.a + (over[1].1.a - over[0].1.a) * fy,
-                };
-                let (wr, wg, wb) = field_colour(*fx, fy, s);
-                for (got, want, ch) in [
-                    (base.r * (1.0 - grey.a) + grey.r * grey.a, wr, 'r'),
-                    (base.g * (1.0 - grey.a) + grey.g * grey.a, wg, 'g'),
-                    (base.b * (1.0 - grey.a) + grey.b * grey.a, wb, 'b'),
-                ] {
-                    approx(got, want, 1e-5, &format!("the field at ({fx}, {fy}) channel {ch}"));
-                }
+        assert_eq!(fans.len(), 1, "the cap is one fan and not a dice of triangles");
+        let (centre, c_centre, rim) = &fans[0];
+        approx(centre[0], cx, 1e-2, "the fan is centred on the field");
+        approx(centre[1], cy, 1e-2, "the fan is centred on the field");
+        approx(c_centre.r, p.hsv[2], 1e-5, "the centre is grey at the field's value");
+        approx(c_centre.g, p.hsv[2], 1e-5, "the centre is grey at the field's value");
+        approx(c_centre.b, p.hsv[2], 1e-5, "the centre is grey at the field's value");
+        assert_eq!(rim.len(), wedges, "the cap's rim has one point per wedge");
+        for (i, (pos, col)) in rim.iter().enumerate() {
+            let (want_pos, want_col) = want(1, i);
+            approx(pos[0], want_pos[0], 1e-2, &format!("cap rim {i} x"));
+            approx(pos[1], want_pos[1], 1e-2, &format!("cap rim {i} y"));
+            approx(col.r, want_col.r, 1e-5, &format!("cap rim {i} red"));
+            approx(col.g, want_col.g, 1e-5, &format!("cap rim {i} green"));
+            approx(col.b, want_col.b, 1e-5, &format!("cap rim {i} blue"));
+        }
+        // ---- the annular bands: one quad per ring-and-wedge cell.
+        let quads: Vec<([[f32; 2]; 4], [Color; 4])> = dl
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::QuadC { p, c } => Some((*p, *c)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(quads.len(), (rings - 1) * wedges, "one quad per ring-and-wedge cell past the cap");
+        // The first cell of every ring: the fan above already proves the
+        // wedge law holds all the way ROUND one ring, so this proves it
+        // holds all the way OUT, and the two together cover the grid the
+        // ring/wedge loop in `draw` actually walks.
+        for ring in 1..rings {
+            let (verts, cols) = quads[(ring - 1) * wedges];
+            let corners = [want(ring, 0), want(ring, 1), want(ring + 1, 1), want(ring + 1, 0)];
+            for i in 0..4 {
+                approx(verts[i][0], corners[i].0[0], 1e-2, &format!("ring {ring} corner {i} x"));
+                approx(verts[i][1], corners[i].0[1], 1e-2, &format!("ring {ring} corner {i} y"));
+                approx(cols[i].r, corners[i].1.r, 1e-5, &format!("ring {ring} corner {i} red"));
+                approx(cols[i].g, corners[i].1.g, 1e-5, &format!("ring {ring} corner {i} green"));
+                approx(cols[i].b, corners[i].1.b, 1e-5, &format!("ring {ring} corner {i} blue"));
             }
         }
     }

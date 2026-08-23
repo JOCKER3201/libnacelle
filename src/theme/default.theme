@@ -5057,7 +5057,7 @@ format_w = 11u                      # the plate that names the notation and step
 swatch = 4u                         # one ready-made colour's cell · - · len (u) · 21.6 px
 swatch_gap = @space.2               # between those cells · - · len (u) · @space.2 = 1u = 5.4 px
 swatch_cols = 8                     # how many cells a grid row holds · - · n · eight is what fits the text side at field_w_frac without the cells shrinking under a fingertip
-hue_stops = 24                      # how finely the circle is sampled across the field · - · n, 2 .. 64 · rect_grad cuts one band per stop interval, so this is the trade between a smooth ramp and the vertex count; 24 is 15 degrees a band
+hue_stops = 24                      # how finely the circle is sampled across the field · - · n, 2 .. 64 · rounded up to a multiple of six and read as a wedge count for the hue/saturation wheel (2026-08-23), so this is the trade between a smooth wheel and the vertex count; 24 is 15 degrees a wedge, already a multiple of six
 handle = 1.4u                       # half the marker that stands on a chosen point · - · len (u) · 7.6 px
 handle_stroke = @stroke.regular     # that marker's line weight · - · str · @stroke.regular; it is a RING, so the colour it points at stays visible through it
 checker = 1.6u                      # one square of the chequerboard a colour with alpha is shown against · - · len (u) · 8.6 px
