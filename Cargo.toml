@@ -91,6 +91,28 @@ resvg = { version = "=0.45.1", default-features = false }
 # from the rest of this crate, not because it needs to move independently.
 nacelle-shaders = { git = "https://github.com/JOCKER3201/nacelle-shaders" }
 
+# Wallpaper decoding for `[backdrop] source = image` (theme/backdrop.rs).
+# default-features = false drops the crate's own default set — rayon, and
+# decoders (avif/dds/exr/ff/gif/hdr/ico/pnm/qoi/tga/tiff/webp) this file
+# never calls — down to the two formats a desktop wallpaper actually
+# ships in, plus bmp, which is free: the `image` crate implements it
+# itself with no dependency of its own, unlike every other format below.
+# License audit (2026-08-23), `cargo tree -p image` on this feature set,
+# every crate it names checked against its own Cargo.toml `license` field:
+#   image                                            MIT OR Apache-2.0
+#   png, zune-core, zune-jpeg, num-traits, cfg-if,
+#   serde_core, crc32fast, fdeflate, flate2           MIT OR Apache-2.0
+#   bitflags                                          MIT OR Apache-2.0
+#   miniz_oxide                          MIT OR Zlib OR Apache-2.0
+#   simd-adler32, adler2 (flate2's checksums)          MIT OR Apache-2.0
+#   bytemuck                             Zlib OR Apache-2.0 OR MIT
+#   byteorder-lite                            Unlicense OR MIT
+#   moxcms, pxfm (png's ICC colour management)   BSD-3-Clause OR Apache-2.0
+# No copyleft, no C toolchain, nothing outside the licences this project
+# already accepts (see nacelle-ai/Cargo.toml's licence rule, which states
+# the same list for the whole family).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+
 [dev-dependencies]
 # The derive is only ever used by tests here — the toolkit deserialises
 # nothing of its own, it hands `settings::load` an addon's type. Keeping
