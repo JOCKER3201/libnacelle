@@ -19,10 +19,12 @@ fn the_masters_alarm_skin_is_reachable_and_changes_what_would_be_drawn() {
     // `glow.panel_edge.enabled` was false in the resting master and true in
     // `[mood.alert]` until 2026-08-23; the master ships it lit at rest now
     // (the neon-by-default change), so the flag alone no longer tells
-    // resting and alert apart — `[mood.alert]`'s own radius and alpha,
-    // both raised above the resting master's, are what carry that now
-    // (image 4's screen-wide lit edges is still louder, just off a louder
-    // floor).
+    // resting and alert apart — `[mood.alert]`'s own alpha, raised above
+    // the resting master's, is what carries that now. Radius is NOT part
+    // of the proof: the resting master's reach is 4u, the declared
+    // 0u..4u track's own ceiling ("maximum by default", also
+    // 2026-08-23), so alert cannot reach any further and inherits it
+    // unchanged rather than restating the same wall.
     let glow = theme::id("glow.panel_edge.enabled").expect("the master declares the panel glow");
     let radius = theme::id("glow.panel_edge.radius").expect("the master declares the glow's radius");
     let alpha = theme::id("glow.panel_edge.alpha").expect("the master declares the glow's alpha");
@@ -42,7 +44,7 @@ fn the_masters_alarm_skin_is_reachable_and_changes_what_would_be_drawn() {
     assert_eq!(theme::current_mood().as_deref(), Some("alert"));
     assert!(theme::resolved().flag(glow), "the alarm skin did not reach the bake");
     assert!(
-        theme::resolved().px(radius) > resting_radius && theme::resolved().px(alpha) > resting_alpha,
+        theme::resolved().px(radius) >= resting_radius && theme::resolved().px(alpha) > resting_alpha,
         "the alarm's edges are not louder than the resting glow they are supposed to outshout"
     );
     // The transition tint the host fades to zero over motion.mood_change.
@@ -52,7 +54,7 @@ fn the_masters_alarm_skin_is_reachable_and_changes_what_would_be_drawn() {
     assert!(theme::set_mood(Some("lockdown")));
     assert!(theme::resolved().flag(glow), "lockdown did not inherit alert");
     assert!(
-        theme::resolved().px(radius) > resting_radius && theme::resolved().px(alpha) > resting_alpha,
+        theme::resolved().px(radius) >= resting_radius && theme::resolved().px(alpha) > resting_alpha,
         "lockdown did not inherit alert's louder edges"
     );
 
@@ -91,7 +93,7 @@ fn the_masters_alarm_skin_is_reachable_and_changes_what_would_be_drawn() {
     assert!(theme::set_mood(Some("alert")), "the alarm does not reach a chosen theme");
     assert!(theme::resolved().flag(glow));
     assert!(
-        theme::resolved().px(radius) > chosen_radius && theme::resolved().px(alpha) > chosen_alpha,
+        theme::resolved().px(radius) >= chosen_radius && theme::resolved().px(alpha) > chosen_alpha,
         "the alarm's edges are not louder than the chosen theme's resting glow"
     );
     let alarmed = theme::resolved().color(accent);

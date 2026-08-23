@@ -1108,16 +1108,17 @@ panel_edge.enabled = true
 panel_edge.color = element
                     # glow tint; images 1-6; colour or the word `element`,
                     # which means the panel edge's own resolved colour
-panel_edge.radius = 1.6u
+panel_edge.radius = 4u
                     # how far the glow reaches past the edge; images 1-6;
                     # u, 0u .. 4u; 0u is the `none` sentinel — draw nothing
                     # The theme editor's GLOW REACH writes this (BASIC,
                     # 2026-08-18) and the declared 0u..4u above is the
                     # track's two ends — the wall is the FILE's, not the
-                    # editor's. 1.6u is the editor's OWN seed for a lit
-                    # kind chosen on a theme with no dress of its own
-                    # (`theme::edit::border_edits`) — the master now wears
-                    # what a fresh NEON pick would have written it anyway.
+                    # editor's. 4u (2026-08-23) is that wall's TOP: the
+                    # owner asked for the reach at its maximum by default,
+                    # not at border_edits()'s own undressed-theme seed of
+                    # 1.6u, which is now only where a theme's own first
+                    # lit pick still lands.
 panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube
                     # how the light is spent across the radius; images 1-6,
                     # 7-10. `gauss` is the wide soft halo of images 7 and 10
@@ -4502,8 +4503,10 @@ glow.panel_edge.enabled    = true                  # panel edges light up screen
 glow.panel_edge.alpha      = 0.7                   # how hard they light up — roughly double the resting master's own
                     # 0.34 (2026-08-23); image 4; 0..1; overrides glow.panel_edge.alpha. Alert
                     # has to outshout a master that now glows at rest, not merely glow.
-glow.panel_edge.radius     = 3.2u                  # and how far — double the resting master's own 1.6u, for the
-                    # same reason; image 4; u; overrides glow.panel_edge.radius
+                    # No radius override here: the resting master's own reach is 4u,
+                    # the declared 0u..4u track's own ceiling (2026-08-23, "maximum by
+                    # default") — alert cannot reach further than the wall, so it
+                    # inherits the same 4u and carries its whole escalation on alpha.
 
 # ---- lockdown · a CONVENTION, not engine code: alert plus palette.data ---
 # 5.24 ships `normal` and `alert` in the engine and `lockdown` as a
