@@ -4,7 +4,9 @@
 //! engine's; WHAT the stage furniture looks like is decided here, and
 //! every value is a theme token, per the governing principle. The
 //! backdrop PLATE (traces, grid, vignette) is `theme::plate` — baked
-//! pixels, not per-frame geometry.
+//! pixels, not per-frame geometry — and the backdrop WALLPAPER
+//! (`backdrop.source = image`) is its sibling `theme::backdrop`, baked
+//! the same way and composited by [`board_ground`] just beneath it.
 //!
 //! EVERY board paints its ground ([`board_ground`]), standing or
 //! moving. This header used to say the opposite — "a board standing
@@ -53,21 +55,40 @@ pub fn clear_color() -> Color {
 
 /// The ground one board stands on, screen-sized, in the theme's own
 /// order: `backdrop.solid` — what lies behind the board — then the
-/// board's field `elev.board.fill`, then the baked backdrop plate, the
-/// decoration whose traces, grid and stars live on that field (5.5).
-/// Emitted before a board's panels, standing or moving: by the FRAME
-/// once, under everything, and again per FACE by a board riding
-/// sideways, so that caller's yaw and perspective carry ground and
-/// panels together and the face turns as one solid wall. The two do
-/// not fight — a sideways ride lays [`ride_void`] over the whole
-/// screen before its first face, so the frame's own copy is covered
-/// for as long as a cube is up. Two levels rather than one because
-/// a family-B board paints NOTHING of its own (`elev.board.fill` at
-/// alpha 0) and a wall of nothing is a pane of glass, not a wall: what
-/// that theme puts behind its panes is the backdrop, and the backdrop
-/// is what the wall carries. `plate` is the host's baked backdrop
-/// texture, or `None` when the theme bakes no decoration at all.
-pub fn board_ground(dl: &mut DrawList, w: f32, h: f32, plate: Option<ImageId>) {
+/// board's field `elev.board.fill`, then the wallpaper (`backdrop.source
+/// = image`, `theme::backdrop::bake_wallpaper`), then the baked
+/// decoration plate, the traces/grid/stars/vignette that live over it
+/// (5.5, 5.15). Emitted before a board's panels, standing or moving: by
+/// the FRAME once, under everything, and again per FACE by a board
+/// riding sideways, so that caller's yaw and perspective carry ground
+/// and panels together and the face turns as one solid wall. The two do
+/// not fight — a sideways ride lays [`ride_void`] over the whole screen
+/// before its first face, so the frame's own copy is covered for as
+/// long as a cube is up. Two levels rather than one because a family-B
+/// board paints NOTHING of its own (`elev.board.fill` at alpha 0) and a
+/// wall of nothing is a pane of glass, not a wall: what that theme puts
+/// behind its panes is the backdrop, and the backdrop is what the wall
+/// carries.
+///
+/// `wallpaper` and `plate` are both the HOST's textures — this function
+/// only composites, it never bakes (`theme::backdrop::bake_wallpaper`
+/// and `theme::plate::bake_backdrop` do that, off the theme and the
+/// surface size, whenever either changes) — and both are `None` when
+/// their theme has nothing to show: no `source = image`, or no `decor.*`
+/// layer turned on. A theme that sets neither draws exactly what it did
+/// before `backdrop.source` had a reader at all: `backdrop.solid`, flat.
+/// One that sets ONLY the wallpaper gets a photo with no traces or
+/// vignette over it; one that sets both — images 7, 8 and 10's own
+/// pairing — gets the photo with the theme's decoration drawn on top of
+/// it, in that order, because a theme's traces are meant to read as
+/// sitting ON a wallpaper, not under one.
+pub fn board_ground(
+    dl: &mut DrawList,
+    w: f32,
+    h: f32,
+    wallpaper: Option<ImageId>,
+    plate: Option<ImageId>,
+) {
     static SOLID: OnceLock<TokenId> = OnceLock::new();
     static FILL: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
@@ -77,10 +98,15 @@ pub fn board_ground(dl: &mut DrawList, w: f32, h: f32, plate: Option<ImageId>) {
             dl.rect(0.0, 0.0, w, h, c);
         }
     }
+    // White at 1.0 is the multiplicative identity on both images: the
+    // plates' pixels — the wallpaper's already fitted and graded,
+    // decor's own layers — ARE the colours to put on screen.
+    const IDENTITY: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    if let Some(id) = wallpaper {
+        dl.image(0.0, 0.0, w, h, id, IDENTITY);
+    }
     if let Some(id) = plate {
-        // White at 1.0 is the multiplicative identity: the plate's
-        // pixels ARE the theme's baked colours.
-        dl.image(0.0, 0.0, w, h, id, Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
+        dl.image(0.0, 0.0, w, h, id, IDENTITY);
     }
 }
 
