@@ -50,6 +50,7 @@
 //! §6's `ensure()` — so `enforce.rs` is a pass over baked values and nothing
 //! here has to move for it. The engine is complete and useful without all five.
 
+pub mod backdrop;
 pub mod bake;
 pub mod cascade;
 pub mod color;
@@ -600,7 +601,7 @@ pub fn load_with(req: LoadRequest) -> Arc<ThemeDiagnostics> {
 
     // ---- stage 3: the selected theme, and its [meta] base chain -------
     let mut fs = FsThemes::new();
-    let chosen = req
+    let mut chosen = req
         .path
         .clone()
         .or_else(|| std::env::var_os("NACELLE_THEME_PATH").map(PathBuf::from));
@@ -628,6 +629,17 @@ pub fn load_with(req: LoadRequest) -> Arc<ThemeDiagnostics> {
                     Span::default(),
                     format!("theme \"{name}\" was not found on the search path — using default"),
                 ));
+            }
+            // `open` just recorded the exact file the NAME resolved to —
+            // capture it before `base_chain` below opens further files
+            // (a `[meta] base` chain) and overwrites the field with one
+            // of THEIR directories instead. Without this a theme loaded
+            // by name (the ordinary desktop path) published no `path` at
+            // all, and every asset a theme names relative to its own
+            // directory — `backdrop.image` among them — had nothing to
+            // resolve against.
+            if d.is_some() {
+                chosen = fs.found_at.take();
             }
             d
         }
@@ -1223,6 +1235,14 @@ const LEGACY_FAMILY_DIR: &str = "nacelle-desktop";
 
 struct FsThemes {
     dirs: Vec<PathBuf>,
+    /// The full path `open()` last read a document from — the ONLY record
+    /// of it anywhere, since [`cascade::ThemeSource::open`]'s return type
+    /// is a `Document`, not a path. `backdrop.image` (theme/backdrop.rs)
+    /// resolves relative to the directory this holds after the SELECTED
+    /// theme's own open, which `load_with` captures before the `[meta]
+    /// base` chain's opens overwrite it with an ancestor's directory
+    /// instead.
+    found_at: Option<PathBuf>,
 }
 
 impl FsThemes {
@@ -1234,6 +1254,7 @@ impl FsThemes {
                 home_dir().map(|h| h.join(".config")),
                 data_dirs_var().as_deref(),
             ),
+            found_at: None,
         }
     }
 }
@@ -1350,6 +1371,7 @@ impl cascade::ThemeSource for FsThemes {
         for d in &self.dirs {
             let p = d.join(format!("{name}.theme"));
             if p.is_file() {
+                self.found_at = Some(p.clone());
                 return parse::parse_file(src, &p, out);
             }
         }
@@ -2499,6 +2521,31 @@ mod tests {
             live.iter().any(|d| d.ends_with("nacelle/themes")),
             "the live search path missed the family folder: {live:?}"
         );
+    }
+
+    /// `open()` is the only place a NAME becomes a file, so it is the only
+    /// place that can say which DIRECTORY that file came from —
+    /// `theme::backdrop::bake_wallpaper` resolves a relative
+    /// `backdrop.image` path against exactly this, by way of `load_with`'s
+    /// `chosen`. Before 2026-08-23 `open` handed back the parsed
+    /// `Document` and threw the path away, so a theme loaded by NAME —
+    /// `NACELLE_THEME_NAME`, or the settings panel's picker, the ordinary
+    /// desktop path — published no `path` at all, and every asset such a
+    /// theme named relative to its own directory had nothing to resolve
+    /// against.
+    #[test]
+    fn open_records_the_directory_a_name_actually_resolved_to() {
+        let dir = std::env::temp_dir();
+        let name = format!("nacelle-fsthemes-open-{}", std::process::id());
+        let file = dir.join(format!("{name}.theme"));
+        std::fs::write(&file, "[meta]\nschema = 1\n").expect("the fixture theme must write");
+        let mut fs = FsThemes { dirs: vec![dir.to_path_buf()], found_at: None };
+        let mut src = Sources::new();
+        let mut out = Vec::new();
+        let doc = fs.open(&name, &mut src, &mut out);
+        let _ = std::fs::remove_file(&file);
+        assert!(doc.is_some(), "the fixture theme did not open: {out:?}");
+        assert_eq!(fs.found_at, Some(file), "open() did not record the file it read");
     }
 
     /// THE PREFIX `sudo make install` USES IS ON THE PATH.

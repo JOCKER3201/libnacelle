@@ -426,8 +426,14 @@ fn composite_coverage(rgba: &mut [u8], cov: &[u8], color: Color) {
 }
 
 /// src OVER dst in straight alpha, one pixel.
+///
+/// `pub(super)` rather than private: `backdrop.rs`'s `treat.tint` wash is
+/// the same operation on the same byte layout — a flat colour composited
+/// straight-alpha over a screen-sized RGBA plate — and a second copy of
+/// eight lines of blend math is exactly the kind of drift this crate's
+/// `elev::Level` header warns about (one reader, not one copy per file).
 #[inline]
-fn blend_px(rgba: &mut [u8], i: usize, r: f32, g: f32, b: f32, a: f32) {
+pub(super) fn blend_px(rgba: &mut [u8], i: usize, r: f32, g: f32, b: f32, a: f32) {
     if a <= 0.0 {
         return;
     }
