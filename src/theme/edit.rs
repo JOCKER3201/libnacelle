@@ -502,6 +502,26 @@ pub fn glass_edits(
     out
 }
 
+/// The main background, written LITERALLY — BASIC's one picker taken at
+/// its word rather than solved for through `glass_edits`'s wash-and-opacity
+/// pair. `colour`'s alpha travels unclamped: on BASIC the picker's alpha
+/// channel IS the transparency knob (`ZGŁOSZENIE`, 2026-08-19 — the OPACITY
+/// slider is gone from that page, and this is what replaced it), so what a
+/// theme's file spells `oklch(L, C, H / a)` a person reads as the last
+/// bytes of the picker's own RGBA hex.
+///
+/// The SAME token [`glass_edits`] writes for `Glass::Solid` — this is a
+/// second author of `component.panel.fill`, not a second token, and the
+/// caller decides who wins by ordering (`Settings::editor_edits` calls this
+/// AFTER `glass_edits` and folds it in with `set_edit`, so BASIC's literal
+/// pick outranks the wash-derived seed under it). See [`glass_edits`]'s own
+/// docs for the token's readers (`window::frame`, inherited by
+/// `elev.panel.fill`).
+pub fn panel_fill_edit(scope: Scope, colour: Oklch) -> Edit {
+    let Scope::Theme = scope;
+    Edit::new("component.panel.fill", oklch_literal(colour))
+}
+
 // ------------------------------------------------- the whole-theme sets
 //
 // Everything below landed 2026-08-16, when the owner's wish grew from "the
@@ -1581,6 +1601,25 @@ mod tests {
         assert!(
             solid.iter().any(|e| e.token == "elev.panel.glass.rank" && e.value == "0"),
             "SOLID left a previous glass standing"
+        );
+    }
+
+    /// BASIC's literal write, and the one thing it must NOT do that
+    /// [`accent_edit`] does: keep the alpha. The picker's alpha channel is
+    /// the transparency knob now (2026-08-19, the OPACITY slider's
+    /// replacement), so a caller handing this function a translucent
+    /// colour must get a translucent token back, not one flattened opaque.
+    #[test]
+    fn the_panel_fill_write_is_the_one_token_and_keeps_its_alpha() {
+        let opaque = panel_fill_edit(Scope::Theme, c(0.24, 0.02, 210.0, 1.0));
+        assert_eq!(opaque.token, "component.panel.fill");
+        assert!(!opaque.value.contains('/'), "an opaque pick writes no alpha");
+        let seen_through = panel_fill_edit(Scope::Theme, c(0.24, 0.02, 210.0, 0.55));
+        assert_eq!(seen_through.token, "component.panel.fill");
+        assert!(
+            seen_through.value.contains("0.550"),
+            "the picker's alpha must reach the file: {}",
+            seen_through.value
         );
     }
 
