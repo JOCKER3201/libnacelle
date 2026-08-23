@@ -259,9 +259,10 @@ pub(crate) fn tube_dress(
 ///   different task — it needs a driven gradient and a gradient halo,
 ///   neither of which exists.
 /// * In the VECTOR lane the core is a second shape record over the
-///   border's own, which is R4's double edge-AA — the same reason
-///   `render.vector` is still false and still blocked on K3d. It costs
-///   nothing today and it is written down so it is not rediscovered.
+///   border's own, which is R4's double edge-AA — one of the bounded,
+///   known costs `render.vector`'s master token comment names as shipped
+///   rather than blocking, as of K3d (2026-08-23). It costs nothing today
+///   and it is written down so it is not rediscovered.
 ///
 /// A theme written before `tube` existed cannot reach any of it: the word
 /// is not in its falloff, so [`tube_dress`] answers `None` and the halo

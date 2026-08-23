@@ -1668,8 +1668,10 @@ pub struct DrawList {
     /// vertices, cleared with them.
     shapes: Vec<Shape>,
     /// Whether ring/ring_fill take the vector lane. The application
-    /// sets it from the theme's `render.vector`; false is the shipping
-    /// default and the tessellated path bit for bit.
+    /// sets it from the theme's `render.vector`; a fresh list starts
+    /// `false` — the tessellated path bit for bit — until something arms
+    /// it, and `true` is the shipping theme's own default as of K3d
+    /// (2026-08-23).
     vector: bool,
     /// §2.3's ride subdivision: shape quads emit as warp×warp grids
     /// while a post-emission transform is in flight. 1 = one quad, and
@@ -2319,14 +2321,15 @@ impl DrawList {
     /// the theme wrote, so a gradient ring takes it whichever way
     /// `render.vector` is set.
     ///
-    /// Two consequences, both bounded and neither reaching the shipping
-    /// picture, `render.vector = false` being the default it goes down
-    /// behind. With the lane ON, a gradient-edged surface does not WELD:
-    /// its bed writes a fill-only record and the ring lays a strip over
-    /// it, so that silhouette's outer edge blends twice — the dark rim R4
-    /// names, which the flat ring is welded precisely to avoid. And the
-    /// band is tessellated, so it is the one edge on the frame without the
-    /// lane's analytic coverage.
+    /// Two consequences, both bounded and both now reaching the shipping
+    /// picture, `render.vector = true` being the default as of K3d
+    /// (2026-08-23) — the master's own token comment names both. With the
+    /// lane ON, a gradient-edged surface does not WELD: its bed writes a
+    /// fill-only record and the ring lays a strip over it, so that
+    /// silhouette's outer edge blends twice — the dark rim R4 names, which
+    /// the flat ring is welded precisely to avoid. And the band is
+    /// tessellated, so it is the one edge on the frame without the lane's
+    /// analytic coverage.
     ///
     /// Widening the record to a stop pair is K4's business, not a merge's:
     /// it is a change to the shape record itself and to `fs_shape`, on
@@ -3753,12 +3756,17 @@ impl DrawList {
         // one answer now.
         //
         // The tube's own profile (aura, decay, bands) does NOT ride this
-        // record: `Soft` carries a reach and a kind, not a ramp. On the
-        // vector lane a tube therefore draws as a plain glow of the same
-        // reach. That is a debt owed to K3d, not to this merge — the lane
-        // is off (`render.vector = false`) and the sprite path, which the
-        // tube was written for, is the one that runs.
-        if self.vector || u1 <= u0 || v1 <= v0 {
+        // record: `Soft` carries a reach and a kind, not a ramp. K3d
+        // (2026-08-23) paid down the debt this comment used to describe by
+        // gating on the profile instead of on the lane alone: a HALO has
+        // nothing a flat record could lose, so it takes the record on
+        // either lane, but a profile that SHAPES the reach (`is_halo() ==
+        // false` — a tube's `decay = 3.0`, or any aura) still takes the
+        // strip below even with the switch raised, because that is the
+        // only path that draws the shape the theme asked for. Carrying a
+        // ramp into the record is real follow-on work, not a `self.vector`
+        // check away.
+        if (self.vector && profile.is_halo()) || u1 <= u0 || v1 <= v0 {
             self.shape_verts(&ShapeSpec {
                 rect: r,
                 corners: *c,
@@ -3901,12 +3909,14 @@ impl DrawList {
         }
         let (u0, v0, u1, v1) = mask_uv;
         // The vector lane cannot yet express an inside-only feather — its
-        // soft glow is OUTSIDE_ONLY by construction — and a tube already
-        // degrades to a plain outer glow there (K3d debt). So the inner
-        // face is dropped on the vector lane and on a maskless caller, and
-        // the sprite lane, which is the shipping one and the one the tube
-        // was written for, carries it.
-        if self.vector || u1 <= u0 || v1 <= v0 {
+        // soft glow is OUTSIDE_ONLY by construction — and a shaped profile
+        // has nowhere to ride on it (the same gate as `glow_ring_with`,
+        // K3d, 2026-08-23). The caller already only reaches this function
+        // when `!profile.is_halo()` (`panel_edge_glow`'s own gate — a HALO
+        // never asks for an inner face at all), so `is_halo()` is checked
+        // here too rather than assumed, for the caller that has not been
+        // written yet. Dropped on a maskless caller either way.
+        if (self.vector && profile.is_halo()) || u1 <= u0 || v1 <= v0 {
             return;
         }
         self.glow_strip(r, c, segments, radius, color, mask_uv, profile, true);
@@ -4867,6 +4877,69 @@ mod tests {
             };
             assert_eq!(dump(&halo), dump(&dl), "{flat:?} was not the halo");
         }
+    }
+
+    /// K3d's own regression (2026-08-23): raising `render.vector` must
+    /// not silently flatten a tube. A HALO has nothing a shape record
+    /// could lose, so it rides the vector lane's record on either side of
+    /// the switch; a SHAPED profile — `decay != 1.0`, or an aura — has no
+    /// ramp a record can carry yet, so `glow_ring_with` must still spend
+    /// the tessellated strip even with the lane on, and its inner face
+    /// must still draw rather than vanish. Read off `shape_len` and
+    /// `verts`, the same instruments `vector.rs`'s own lane test in
+    /// nacelle-desktop uses, so a future record format that DOES carry a
+    /// ramp is exactly the change that would need to touch this test too.
+    #[test]
+    fn a_shaped_glow_keeps_its_shape_when_the_vector_lane_is_on() {
+        let uv = FontSystem::mask_soft_uv();
+        let col = Color { r: 0.9, g: 0.2, b: 0.7, a: 0.5 };
+        let r = Rect::new(12.0, 20.0, 180.0, 90.0);
+        let c = [Corner::round(9.0); 4];
+        let tube = GlowProfile { decay: 3.0, aura: 1.6, aura_reach: 0.3, bands: 5 };
+        assert!(!tube.is_halo(), "the fixture must be a shaped profile");
+
+        // The tessellated answer, off the vector lane — the picture the
+        // tube was written for and the one this test holds the lane to.
+        let mut tess = DrawList::new();
+        tess.glow_ring_with(r, &c, 6, 20.0, col, uv, tube);
+        tess.glow_ring_inward_with(r, &c, 6, 20.0, col, uv, tube);
+        assert_eq!(tess.shape_len(), 0, "the tessellated lane writes no shape record");
+        assert!(!tess.verts.is_empty(), "the tube's strips must have drawn something");
+
+        // The same calls with the lane armed. A record would replace the
+        // strips with one flat glow and drop the inner face outright —
+        // exactly the two failures this test exists to catch.
+        let mut vec_on = DrawList::new();
+        vec_on.set_vector(true);
+        vec_on.glow_ring_with(r, &c, 6, 20.0, col, uv, tube);
+        vec_on.glow_ring_inward_with(r, &c, 6, 20.0, col, uv, tube);
+        assert_eq!(
+            vec_on.shape_len(),
+            0,
+            "a shaped profile must still take the strip, not a shape record, \
+             even with render.vector on"
+        );
+        let dump = |dl: &DrawList| {
+            dl.verts.iter().map(|v| (v.pos, v.uv, v.color)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            dump(&tess),
+            dump(&vec_on),
+            "the vector lane must draw the tube identically to the tessellated lane \
+             until a shape record can carry a ramp"
+        );
+
+        // And the control: a HALO on the same lane DOES take the record,
+        // so the gate is on the profile and not a lane that has stopped
+        // taking records at all.
+        let mut halo_on = DrawList::new();
+        halo_on.set_vector(true);
+        halo_on.glow_ring_with(r, &c, 6, 20.0, col, uv, GlowProfile::HALO);
+        assert_eq!(
+            halo_on.shape_len(),
+            1,
+            "an unshaped halo must still ride the vector lane's record"
+        );
     }
 
     /// THE TUBE'S LIGHT STOPS WHERE THE HALO'S IS STILL FADING.
