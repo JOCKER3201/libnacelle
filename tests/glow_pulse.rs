@@ -6,7 +6,10 @@
 //! either key. This binary is that reader's proof, and the condition on
 //! the whole stone: the picture must not move unless a theme asked TWICE
 //! — once for `glow.panel_edge.enabled` and once for
-//! `motion.glow_pulse.enabled`, both of which the master ships false.
+//! `motion.glow_pulse.enabled`. Until 2026-08-23 the master shipped both
+//! false; the first now ships true (the neon-by-default change), so the
+//! "no glow at all" leg of the proof below asks for it explicitly, the
+//! same way "glow, no swing" already had to.
 //!
 //! Everything is measured on `object::window::frame`, which is the
 //! shortest path to `panel_edge_glow`, and everything is compared as
@@ -30,11 +33,17 @@ const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 const BOX: Rect = Rect { x: 200.0, y: 120.0, w: 640.0, h: 360.0 };
 
-/// The master's own `[glow]` ships the halo off AND at zero radius AND at
-/// zero alpha, so a fixture has to turn on all three before there is a
-/// halo to breathe at all.
+/// A halo distinct from the master's own resting one (1.6u at 0.34,
+/// 2026-08-23) in both numbers, so a comparison against it is a
+/// comparison against a fixture's OWN values and not an accident of
+/// matching the master's by construction.
 const HALO: &str = "[glow]\npanel_edge.enabled = true\npanel_edge.radius = 2u\n\
                     panel_edge.alpha = 0.5\n";
+
+/// No halo at all. Until 2026-08-23 this was the master's own resting
+/// state and `master()` alone drew it; the master now ships `panel_edge`
+/// lit, so silence has to be asked for the same way a swing does.
+const NO_GLOW: &str = "[glow]\npanel_edge.enabled = false\n";
 
 fn skin(body: &str) {
     let path = std::env::temp_dir().join(format!("nacelle-glow-{}.theme", std::process::id()));
@@ -94,10 +103,10 @@ fn frame_at(fonts: &mut FontSystem, now: f64) -> Vec<[f32; 8]> {
 fn the_halo_breathes_only_when_a_theme_asks_twice() {
     let mut fonts = FontSystem::new();
 
-    // ---- the master: no halo at all, and the clock changes nothing.
-    master();
+    // ---- explicitly off: no halo at all, and the clock changes nothing.
+    skin(NO_GLOW);
     let plain = frame_at(&mut fonts, 0.0);
-    assert_eq!(plain, frame_at(&mut fonts, 0.4), "the master's frame moved with the clock");
+    assert_eq!(plain, frame_at(&mut fonts, 0.4), "a disabled panel_edge moved with the clock");
     assert_eq!(plain, frame_at(&mut fonts, 123.456), "…and at any other clock");
 
     // ---- a halo, and `glow_pulse` left as the master ships it: OFF.

@@ -1,6 +1,9 @@
-//! Colour picker: a two-dimensional field of hue by saturation, a value
+//! Colour picker: a two-dimensional field of hue by value, a saturation
 //! bar beside it, the chosen colour as a patch, that same colour written
 //! out in one of six notations, and two grids of ready-made colours.
+//! (The field and the bar traded axes 2026-08-23: the field answered
+//! for saturation and the bar for value until then. The names below
+//! are written for the swap already in force.)
 //!
 //! WHY AN OBJECT AND NOT A PAGE OF SLIDERS. Until 2026-08-18 a colour in
 //! the theme editor was three sliders — brightness, saturation, hue —
@@ -14,25 +17,26 @@
 //! from `[picker]` like everything else in this toolkit.
 //!
 //! THE FIELD IS EXACT, AND THAT IS WHY IT IS TWO CALLS AND NOT A GRID OF
-//! CELLS. HSV's own definition is affine in saturation:
+//! CELLS. HSV's own definition is affine in value:
 //!
 //! ```text
-//! rgb(h, s, v) = v·(1 − s) + s·rgb(h, 1, v)
+//! rgb(h, s, v) = v · rgb(h, s, 1)
 //! ```
 //!
-//! — a grey of value `v` mixed with the fully saturated hue by `s`. So
-//! the field is a horizontal hue ramp drawn at the current value, with
-//! ONE two-stop vertical overlay of that grey whose alpha runs 0 at the
-//! top (fully saturated) to 1 at the bottom. The compositor's straight
-//! alpha over encoded values reproduces the line above exactly, which is
+//! — black mixed with the fully brightened hue by `v`. So the field is
+//! a horizontal hue ramp drawn at the current saturation, with ONE
+//! two-stop vertical overlay of black whose alpha runs 0 at the top
+//! (fully bright) to 1 at the bottom. The compositor's straight alpha
+//! over encoded values reproduces the line above exactly, which is
 //! what [`field_colour`] and its test assert. Dicing the field into
 //! cells would have been the obvious way and would have banded, cost a
 //! quad per cell, and put a number of cells in Rust that no theme could
 //! have argued with.
 //!
-//! THE VALUE BAR IS EXACT FOR THE SAME REASON: `rgb(h, s, v) = v ·
-//! rgb(h, s, 1)`, so it is two stops, the colour at full value and
-//! black.
+//! THE SATURATION BAR IS EXACT FOR THE SAME REASON: `rgb(h, s, v) = s ·
+//! rgb(h, 1, v) + (1 − s) · grey(v)`, so it is two stops, the colour at
+//! full saturation and grey at the field's own value — never black,
+//! which this axis cannot reach.
 //!
 //! HSV AND NOT OKLCh FOR THE FIELD, and the owner ruled on this on
 //! 2026-08-16 about the sliders this replaces: brightness at 100 % must
@@ -166,7 +170,7 @@ impl Format {
 
 /// HSV -> sRGB-encoded RGB. `h` in degrees, `s` and `v` in 0..1.
 ///
-/// The saturation line at the head of this file is this function read
+/// The value line at the head of this file is this function read
 /// sideways, and the field's two draw calls stand on it.
 pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     let h = h.rem_euclid(360.0) / 60.0;
@@ -208,13 +212,13 @@ pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 }
 
 /// The colour the field shows at `(fx, fy)`, both 0..1 from its top-left,
-/// for a bar standing at `v`.
+/// for a bar standing at saturation `s`.
 ///
 /// The one statement of what the field MEANS. The drawing does not call
 /// it — two gradient calls do — and that is the point: this is the
 /// definition the drawing is tested against.
-pub fn field_colour(fx: f32, fy: f32, v: f32) -> (f32, f32, f32) {
-    hsv_to_rgb(fx.clamp(0.0, 1.0) * 360.0, 1.0 - fy.clamp(0.0, 1.0), v)
+pub fn field_colour(fx: f32, fy: f32, s: f32) -> (f32, f32, f32) {
+    hsv_to_rgb(fx.clamp(0.0, 1.0) * 360.0, s.clamp(0.0, 1.0), 1.0 - fy.clamp(0.0, 1.0))
 }
 
 fn q8(v: f32) -> u8 {
@@ -474,25 +478,29 @@ impl Picker {
         self.set_colour(Color::from_oklch(v).to_srgb());
     }
 
-    /// The field's handle, 0..1 from the field's top-left.
+    /// The field's handle, 0..1 from the field's top-left. Hue across,
+    /// VALUE down (2026-08-23: was saturation — the bar answers for that
+    /// now, so the two controls do not both move the same axis).
     pub fn field_at(&self) -> (f32, f32) {
-        (self.hsv[0].rem_euclid(360.0) / 360.0, 1.0 - self.hsv[1])
+        (self.hsv[0].rem_euclid(360.0) / 360.0, 1.0 - self.hsv[2])
     }
 
-    /// The bar's handle, 0..1 from its top (bright) to its bottom.
+    /// The bar's handle, 0..1 from its top (saturated) to its bottom
+    /// (grey). Was VALUE (bright to black) until 2026-08-23; the name
+    /// stayed — it names the CONTROL, the bar, not the channel it moves.
     pub fn value_at(&self) -> f32 {
-        1.0 - self.hsv[2]
+        1.0 - self.hsv[1]
     }
 
-    /// A press or a drag inside the field.
+    /// A press or a drag inside the field: hue from x, VALUE from y.
     pub fn pick_field(&mut self, fx: f32, fy: f32) {
         self.hsv[0] = fx.clamp(0.0, 1.0) * 360.0;
-        self.hsv[1] = 1.0 - fy.clamp(0.0, 1.0);
+        self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
     }
 
-    /// A press or a drag along the value bar.
+    /// A press or a drag along the bar: SATURATION from y.
     pub fn pick_value(&mut self, fy: f32) {
-        self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
+        self.hsv[1] = 1.0 - fy.clamp(0.0, 1.0);
     }
 
     /// The colour as text, in the notation in force.
@@ -541,9 +549,9 @@ impl Picker {
 /// column no longer carries, and the control is as tall as it was.
 #[derive(Clone, Debug)]
 pub struct Layout {
-    /// Hue across, saturation down.
+    /// Hue across, value down.
     pub field: Rect,
-    /// Value, bright at the top.
+    /// Saturation, vivid at the top, grey at the bottom.
     pub value: Rect,
     /// The chosen colour over the transparency checker.
     pub patch: Rect,
@@ -871,38 +879,47 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
     static ROLE: OnceLock<TokenId> = OnceLock::new();
     static TEXT_INK: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
-    let v = 1.0 - p.value_at();
+    // Read straight off the field: `value_at()` names the BAR now, not
+    // this channel (2026-08-23's swap), and using it here would read the
+    // bar's own axis (saturation) as if it were value.
+    let v = p.hsv[2];
 
-    // ---- the field: one hue ramp at the bar's value, one grey overlay.
-    // `picker.hue_stops` is how finely the circle is sampled, and it is
-    // the theme's number because it is a trade between a smooth ramp and
-    // the bands `rect_grad` cuts between stops.
+    // ---- the field: one hue ramp at the bar's saturation, one black
+    // overlay for value. `picker.hue_stops` is how finely the circle is
+    // sampled, and it is the theme's number because it is a trade between
+    // a smooth ramp and the bands `rect_grad` cuts between stops.
     let n = (t.px(tok(&HUE_STOPS, "picker.hue_stops")).round() as usize).clamp(2, 64);
     let stops: Vec<(f32, Color)> = (0..=n)
         .map(|i| {
             let f = i as f32 / n as f32;
-            let (r, g, b) = hsv_to_rgb(f * 360.0, 1.0, v);
+            let (r, g, b) = hsv_to_rgb(f * 360.0, p.hsv[1], 1.0);
             (f, Color { r, g, b, a: 1.0 })
         })
         .collect();
     ctx.dl.push_clip(l.field.x, l.field.y, l.field.w, l.field.h);
     ctx.dl.rect_grad(l.field, &stops, 0.0);
-    let grey = Color { r: v, g: v, b: v, a: 0.0 };
+    // Uniformly scaling RGB toward black is exactly HSV's V shrinking with
+    // H and S held fixed, so a black overlay whose alpha runs 0 at the top
+    // to 1 at the bottom is value, drawn without a second pass over hue.
+    let black0 = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
     ctx.dl.rect_grad(
         l.field,
-        &[(0.0, grey), (1.0, Color { a: 1.0, ..grey })],
+        &[(0.0, black0), (1.0, Color { a: 1.0, ..black0 })],
         std::f32::consts::FRAC_PI_2,
     );
     ctx.dl.pop_clip();
     frame(ctx, l.field);
 
-    // ---- the value bar: the chosen hue at full value, down to black.
-    let (hr, hg, hb) = hsv_to_rgb(p.hsv[0], p.hsv[1], 1.0);
+    // ---- the bar: the chosen hue at full saturation and the field's
+    // value, down to grey at that same value — never black, which was
+    // the value bar's picture and would draw a colour this axis cannot
+    // reach (saturation 0 is grey, not the absence of light).
+    let (hr, hg, hb) = hsv_to_rgb(p.hsv[0], 1.0, v);
     ctx.dl.rect_grad(
         l.value,
         &[
             (0.0, Color { r: hr, g: hg, b: hb, a: 1.0 }),
-            (1.0, Color::BLACK),
+            (1.0, Color { r: v, g: v, b: v, a: 1.0 }),
         ],
         std::f32::consts::FRAC_PI_2,
     );
@@ -1217,19 +1234,19 @@ mod tests {
 
     #[test]
     fn the_field_is_what_the_two_gradients_draw() {
-        // The saturation line the drawing stands on: a grey of value v
-        // laid over the full hue by alpha 1-s IS hsv(h, s, v).
+        // The value line the drawing stands on: black laid over the hue
+        // at full brightness by alpha 1-v IS hsv(h, s, v).
         for &v in &[0.25f32, 0.6, 1.0] {
             for &s in &[0.0f32, 0.35, 1.0] {
                 for &h in &[0.0f32, 95.0, 210.0, 359.0] {
                     let (r, g, b) = hsv_to_rgb(h, s, v);
-                    let (fr, fg, fb) = field_colour(h / 360.0, 1.0 - s, v);
+                    let (fr, fg, fb) = field_colour(h / 360.0, 1.0 - v, s);
                     approx(fr, r, 1e-5, "field red");
                     approx(fg, g, 1e-5, "field green");
                     approx(fb, b, 1e-5, "field blue");
-                    // What the compositor computes: base·s + grey·(1−s).
-                    let (br, _, _) = hsv_to_rgb(h, 1.0, v);
-                    approx(br * s + v * (1.0 - s), r, 1e-5, "overlay red");
+                    // What the compositor computes: base·v + black·(1−v).
+                    let (br, _, _) = hsv_to_rgb(h, s, 1.0);
+                    approx(br * v, r, 1e-5, "overlay red");
                 }
             }
         }
@@ -1237,21 +1254,24 @@ mod tests {
 
     #[test]
     fn a_drag_onto_the_grey_axis_keeps_the_hue_it_came_from() {
+        // The field no longer answers for saturation (2026-08-23) — the
+        // bar does — so the drag that can zero saturation out and land
+        // on the true grey axis is now on the bar, not the field.
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        let (fx, _) = p.field_at();
-        p.pick_field(fx, 1.0); // saturation to nothing
+        let fx = p.field_at().0;
+        p.pick_value(1.0); // saturation to nothing
         assert_eq!(p.colour().r, p.colour().b, "the grey axis is grey");
-        let (fx2, _) = p.field_at();
+        let fx2 = p.field_at().0;
         approx(fx2, fx, 1e-6, "the hue handle stayed where the hand left it");
         // AND IT SURVIVES A RE-SEED, which is the road this actually
         // happens on: the editor reads the theme back into its controls
         // on every visit, and a grey read back in has no hue to give.
         let grey = p.colour();
         p.set_colour(grey);
-        let (fx3, _) = p.field_at();
+        let fx3 = p.field_at().0;
         approx(fx3, fx, 1e-6, "a re-seed off a grey kept the hue");
         // And coming back off the axis returns the same hue.
-        p.pick_field(fx, 0.0);
+        p.pick_value(0.0);
         approx(p.oklch().h, Picker::of(Color::rgb8(0x00, 0xFF, 0xB0)).oklch().h, 40.0, "hue");
     }
 
@@ -1430,11 +1450,11 @@ mod tests {
     #[test]
     fn the_field_the_two_gradients_emit_is_the_field_the_reference_states() {
         //! `the_field_is_what_the_two_gradients_draw` above checks the
-        //! ARITHMETIC of the saturation line; this checks the CALLS. The
+        //! ARITHMETIC of the value line; this checks the CALLS. The
         //! drawing does not use `field_colour`, so nothing tied the two
-        //! together: a hue ramp emitted at the wrong value, or an overlay
-        //! whose alpha ran the wrong way, would have left every test
-        //! above green.
+        //! together: a hue ramp emitted at the wrong saturation, or an
+        //! overlay whose alpha ran the wrong way, would have left every
+        //! test above green.
         //!
         //! WHAT THIS STILL DOES NOT REACH, said plainly. Compositing the
         //! two stops here is arithmetic on the values that were HANDED
@@ -1447,7 +1467,7 @@ mod tests {
         let mut dl = DrawList::recording();
         let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0);
         let p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        let v = 1.0 - p.value_at();
+        let s = 1.0 - p.value_at(); // `value_at` names the bar now: saturation.
         draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[]);
         let grads: Vec<(Vec<(f32, Color)>, f32)> = dl
             .cmds()
@@ -1467,8 +1487,8 @@ mod tests {
         approx(*hue_angle, 0.0, 1e-6, "the hue runs across");
         approx(*over_angle, std::f32::consts::FRAC_PI_2, 1e-6, "the overlay runs down");
         assert_eq!(over.len(), 2, "the overlay is two stops and not a dice of cells");
-        approx(over[0].1.a, 0.0, 1e-6, "the top of the field is fully saturated");
-        approx(over[1].1.a, 1.0, 1e-6, "the bottom of it is grey");
+        approx(over[0].1.a, 0.0, 1e-6, "the top of the field is fully bright");
+        approx(over[1].1.a, 1.0, 1e-6, "the bottom of it is black");
         // At a stop the ramp IS its stop, so the composite can be put
         // against the reference with no interpolation in between.
         for (fx, base) in hue.iter() {
@@ -1479,7 +1499,7 @@ mod tests {
                     b: over[0].1.b + (over[1].1.b - over[0].1.b) * fy,
                     a: over[0].1.a + (over[1].1.a - over[0].1.a) * fy,
                 };
-                let (wr, wg, wb) = field_colour(*fx, fy, v);
+                let (wr, wg, wb) = field_colour(*fx, fy, s);
                 for (got, want, ch) in [
                     (base.r * (1.0 - grey.a) + grey.r * grey.a, wr, 'r'),
                     (base.g * (1.0 - grey.a) + grey.g * grey.a, wg, 'g'),

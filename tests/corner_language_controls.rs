@@ -33,7 +33,7 @@
 //! ResolvedTheme`): a test that swaps it must not run beside one that
 //! reads it.
 
-use nacelle::draw::{ring_segments, DrawCmd, DrawList};
+use nacelle::draw::{ring_segments, DrawCmd, DrawList, Vertex};
 use nacelle::font::FontSystem;
 use nacelle::object::{checkbox, slider, winframe};
 use nacelle::pointer::Pointer;
@@ -99,10 +99,10 @@ fn skin(mode: &str) {
 /// outer one does (`Corner::inset`'s derivation), so a square measured
 /// at the cut alone would drop it and count a chamfered ring as a
 /// square one.
-fn corner_points(dl: &DrawList, bx: [f32; 4], side: f32) -> usize {
+fn corner_points(verts: &[Vertex], bx: [f32; 4], side: f32) -> usize {
     let (x0, y0) = (bx[0], bx[1]);
     let mut pts: Vec<[f32; 2]> = Vec::new();
-    for v in &dl.verts {
+    for v in verts {
         let p = v.pos;
         let inside = p[0] >= x0 - GRAIN
             && p[0] <= x0 + side + GRAIN
@@ -129,13 +129,19 @@ struct Probe {
     arc: u8,
 }
 
-fn probe(dl: &DrawList, bx: [f32; 4], size: f32, stroke: f32, ceiling: u8) -> Probe {
+/// Takes the vertex slice rather than a whole `DrawList` so a caller whose
+/// object shares screen space with something else's boundary — `plate`,
+/// since 2026-08-23, whose frame draws its own lit edge close enough to a
+/// button plate's corner to land points in it — can filter that other
+/// boundary's verts out first. `groove` and `box_of_checkbox` each draw
+/// into an otherwise-empty list, so they pass `&dl.verts` whole.
+fn probe(verts: &[Vertex], bx: [f32; 4], size: f32, stroke: f32, ceiling: u8) -> Probe {
     assert!(
         size > 0.0,
         "a zero radius is a square corner under every word — the fixture states no radius here"
     );
     Probe {
-        points: corner_points(dl, bx, size + stroke),
+        points: corner_points(verts, bx, size + stroke),
         arc: ring_segments(size, 0.25, ceiling),
     }
 }
@@ -163,7 +169,7 @@ fn groove(fonts: &mut FontSystem) -> Probe {
             _ => None,
         })
         .expect("the slider drew no groove");
-    probe(&dl, r, corners[0].size, 0.0, ceiling())
+    probe(&dl.verts, r, corners[0].size, 0.0, ceiling())
 }
 
 /// The checkbox's box: `ring` alone, so TWO boundaries — the outer face
@@ -184,12 +190,23 @@ fn box_of_checkbox(fonts: &mut FontSystem) -> Probe {
             _ => None,
         })
         .expect("the checkbox drew no box");
-    probe(&dl, r, corners[0].size, stroke, ceiling())
+    probe(&dl.verts, r, corners[0].size, stroke, ceiling())
 }
 
 /// A window control's hit plate: `ring` alone again, two boundaries, and
 /// the SMALLEST ring in a frame that also draws its own outline — the
 /// plate is a fraction of the title bar and the frame is the window.
+///
+/// Since 2026-08-23 the frame's own edge sits under a lit `panel_edge`
+/// (the neon-by-default change), and its glow burns a second ring at the
+/// frame's OWN corner — close enough, in the title bar's top-left, to
+/// land points inside THAT button's corner square too, which is
+/// `corner_points`' whole risk (any vertex in the box counts, whoever
+/// drew it). The title bar carries more than one button of the smallest
+/// size, so rather than clean a button's own points out of a box it
+/// shares with the frame's — indistinguishable once both are inside it —
+/// the search SKIPS any candidate whose own corner box reaches the
+/// frame's, and measures one that does not.
 fn plate(fonts: &mut FontSystem) -> Probe {
     let mut dl = DrawList::recording();
     {
@@ -198,16 +215,56 @@ fn plate(fonts: &mut FontSystem) -> Probe {
         let f = winframe::Frame::new();
         f.draw(&mut c, &m, Rect::new(300.0, 200.0, 800.0, 500.0), "TERMINAL", true);
     }
-    let (r, corners, stroke) = dl
+    let all: Vec<_> = dl
         .cmds()
         .iter()
         .filter_map(|c| match c {
             DrawCmd::Ring { r, corners, stroke, .. } => Some((*r, *corners, *stroke)),
             _ => None,
         })
+        .collect();
+    let frame_area = all
+        .iter()
+        .map(|(r, ..)| r[2] * r[3])
+        .fold(0.0f32, f32::max);
+    let frame_rings: Vec<_> =
+        all.iter().copied().filter(|(r, ..)| r[2] * r[3] == frame_area).collect();
+    let clear_of_the_frame = |r: [f32; 4], side: f32| {
+        !frame_rings.iter().any(|(fr, fc, fs)| {
+            corner_boxes(*fr, fc[0].size + fs)
+                .into_iter()
+                .any(|f_origin| boxes_overlap((r[0], r[1]), side, f_origin, fc[0].size + fs))
+        })
+    };
+    let (r, corners, stroke) = all
+        .iter()
+        .copied()
+        .filter(|(r, ..)| r[2] * r[3] < frame_area)
+        .filter(|(r, c, s)| clear_of_the_frame(*r, c[0].size + s))
         .min_by(|a, b| (a.0[2] * a.0[3]).total_cmp(&(b.0[2] * b.0[3])))
-        .expect("the frame drew no ring at all");
-    probe(&dl, r, corners[0].size, stroke, ceiling())
+        .expect("every button plate the frame drew sits inside its own corner's reach");
+    probe(&dl.verts, r, corners[0].size, stroke, ceiling())
+}
+
+/// The origins of `r`'s four corner squares, each `side` wide.
+fn corner_boxes(r: [f32; 4], side: f32) -> [(f32, f32); 4] {
+    [
+        (r[0], r[1]),
+        (r[0] + r[2] - side, r[1]),
+        (r[0], r[1] + r[3] - side),
+        (r[0] + r[2] - side, r[1] + r[3] - side),
+    ]
+}
+
+/// Whether the GRAIN-padded `side`-wide squares at `a` and `b` share any
+/// ground — the same padding `corner_points` itself measures with, so a
+/// box is judged clear of another exactly as generously as a vertex
+/// would be judged inside either of them.
+fn boxes_overlap(a: (f32, f32), a_side: f32, b: (f32, f32), b_side: f32) -> bool {
+    a.0 - GRAIN <= b.0 + b_side + GRAIN
+        && b.0 - GRAIN <= a.0 + a_side + GRAIN
+        && a.1 - GRAIN <= b.1 + b_side + GRAIN
+        && b.1 - GRAIN <= a.1 + a_side + GRAIN
 }
 
 #[test]

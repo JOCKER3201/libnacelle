@@ -1100,22 +1100,25 @@ follow_density = false
 [glow]
 
 # ---- panel_edge — the 1px glowing panel border, family A's signature ----
-panel_edge.enabled = false
+panel_edge.enabled = true
                     # draw a glow around every panel's edge; images 1-6, 7-10;
-                    # bool; OFF in default — a theme opts in
+                    # bool; ON in default (2026-08-23: the shipped look is
+                    # NEON, the lit glass tube, not a bare line) — a theme
+                    # opts out
 panel_edge.color = element
                     # glow tint; images 1-6; colour or the word `element`,
                     # which means the panel edge's own resolved colour
-panel_edge.radius = 0u
+panel_edge.radius = 1.6u
                     # how far the glow reaches past the edge; images 1-6;
                     # u, 0u .. 4u; 0u is the `none` sentinel — draw nothing
                     # The theme editor's GLOW REACH writes this (BASIC,
                     # 2026-08-18) and the declared 0u..4u above is the
                     # track's two ends — the wall is the FILE's, not the
-                    # editor's. A lit kind still lays 1.6u under a theme
-                    # that has never dressed its halo; a number a person
-                    # moved outranks that floor.
-panel_edge.falloff = gauss # enum: linear | quad | gauss | halo | tube
+                    # editor's. 1.6u is the editor's OWN seed for a lit
+                    # kind chosen on a theme with no dress of its own
+                    # (`theme::edit::border_edits`) — the master now wears
+                    # what a fresh NEON pick would have written it anyway.
+panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube
                     # how the light is spent across the radius; images 1-6,
                     # 7-10. `gauss` is the wide soft halo of images 7 and 10
                     # and it is what this key has always meant.
@@ -1135,8 +1138,11 @@ panel_edge.falloff = gauss # enum: linear | quad | gauss | halo | tube
 panel_edge.mode = auto
                     # rendering technique; -; one of off | shell | sprite |
                     # text4 | auto; auto picks shell at radius <= 0.85u
-panel_edge.alpha = 0.0
+panel_edge.alpha = 0.34
                     # glow opacity — the ONLY 0..1 magnitude; images 1-6;
+                    # 0.34 is `border_edits`'s own seed for a lit kind
+                    # picked on an undressed theme, applied to the master
+                    # itself (2026-08-23, the NEON-by-default change);
                     # frac, 0.0 .. 1.0; state channel is glow_alpha
 panel_edge.boost = 2.6
                     # how hard the edge's light is DRIVEN, as a multiple of
@@ -4493,8 +4499,11 @@ when                       = "severity >= critical"          # declarative trigg
 motion.alarm_blink.enabled = true                  # the alarm emphasis starts cycling; image 1; bool; absolute path - overrides motion.alarm_blink.enabled
 component.alarm_bar.fill   = alpha(@severity.critical.text, 0.18)  # the top bar gets a body; image 1; colour; overrides component.alarm_bar.fill
 glow.panel_edge.enabled    = true                  # panel edges light up screen-wide; image 4; bool; overrides glow.panel_edge.enabled
-glow.panel_edge.alpha      = 0.35                  # how hard they light up; image 4; 0..1; overrides glow.panel_edge.alpha
-glow.panel_edge.radius     = 1.4u                  # and how far; image 4; u; overrides glow.panel_edge.radius
+glow.panel_edge.alpha      = 0.7                   # how hard they light up — roughly double the resting master's own
+                    # 0.34 (2026-08-23); image 4; 0..1; overrides glow.panel_edge.alpha. Alert
+                    # has to outshout a master that now glows at rest, not merely glow.
+glow.panel_edge.radius     = 3.2u                  # and how far — double the resting master's own 1.6u, for the
+                    # same reason; image 4; u; overrides glow.panel_edge.radius
 
 # ---- lockdown · a CONVENTION, not engine code: alert plus palette.data ---
 # 5.24 ships `normal` and `alert` in the engine and `lockdown` as a

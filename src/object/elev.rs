@@ -472,10 +472,10 @@ pub(crate) mod tests {
     /// reader of the clock is the edge bloom's breath on
     /// `motion.glow_pulse`, and a picture compared against another picture
     /// has to be taken at the same phase as it. The master ships
-    /// `glow.panel_edge.enabled = false`, so under it the bloom returns
-    /// before the pulse is ever sampled and the number does not matter —
-    /// which is exactly why it must be written down rather than left to a
-    /// theme that turns the glow on later.
+    /// `glow.panel_edge.enabled = true` (2026-08-23), so the pulse IS
+    /// sampled on every draw now — which is exactly why the instant must
+    /// be written down and held equal on both sides of a comparison,
+    /// rather than left to whatever moment the suite happens to run at.
     pub(crate) const AT_REST: f64 = 0.0;
 
     // ------------------------------------------- the no-move proof
@@ -500,6 +500,15 @@ pub(crate) mod tests {
     /// unconditionally, and a transcript that quietly dropped two of the
     /// four things an object used to do would prove the no-move claim
     /// about a picture nobody ever drew.
+    ///
+    /// A THIRD THING JOINED THE FOUR ON 2026-08-23, and it is not a
+    /// departure: `panel_edge_glow` is no longer a per-object decision
+    /// menu and tooltip's own old code could have carried or dropped — it
+    /// is the master's, unconditional, on every rung — so the transcript
+    /// calls it exactly as the ladder does, on the ring's own gate
+    /// (width alone, matching the departure above), rather than leaving
+    /// it out and proving the no-move claim about a picture the ladder
+    /// does not draw either.
     pub(crate) fn the_private_copy(
         dl: &mut DrawList,
         t: &theme::ResolvedTheme,
@@ -519,7 +528,9 @@ pub(crate) mod tests {
         dl.ring_fill(r, &c, seg, col(t.bed(id(fill))));
         let bw = t.px(id(width)).max(0.0);
         if bw > 0.0 {
-            dl.ring(r, &c, seg, bw, col(t.color(id(edge))));
+            let edge_col = col(t.color(id(edge)));
+            dl.ring(r, &c, seg, bw, edge_col);
+            super::super::window::panel_edge_glow(dl, t, r, &c, seg, edge_col, bw, AT_REST);
         }
     }
 
@@ -581,7 +592,14 @@ pub(crate) mod tests {
         Rect::new(20.0, 12.0, 160.0, 40.0)
     }
 
-    /// The one command a ring draws, whichever kind it is.
+    /// The rung's OWN ring, whichever kind it is — the first one drawn.
+    ///
+    /// Since 2026-08-23 the master ships `panel_edge` lit, so `draw_in`
+    /// may append a second, plain `Ring` after this one: its own burned
+    /// core (`window.rs`'s `panel_edge_glow`, called strictly after
+    /// `dl.ring`/`dl.ring_grad` in `draw_in` above — the order is the
+    /// call order, not a guess about paint order). That second ring is
+    /// glow's business, not this rung's, so it is not this function's.
     fn ring_cmd(dl: &DrawList) -> DrawCmd {
         let rings: Vec<_> = dl
             .cmds()
@@ -589,7 +607,7 @@ pub(crate) mod tests {
             .filter(|c| matches!(c, DrawCmd::Ring { .. } | DrawCmd::RingGrad { .. }))
             .cloned()
             .collect();
-        assert_eq!(rings.len(), 1, "a rung strokes its ring once: {rings:?}");
+        assert!(!rings.is_empty(), "a rung stroked no ring at all");
         rings[0].clone()
     }
 
@@ -638,7 +656,12 @@ pub(crate) mod tests {
         let mut dl = DrawList::new();
         dl.set_vector(true);
         popover().draw_in(&mut dl, &t, box_(), box_(), AT_REST);
-        assert_eq!(dl.shape_len(), 1, "the rung wrote more than one silhouette");
+        // Since 2026-08-23 the master ships `panel_edge` lit, so
+        // `panel_edge_glow` (called after the weld, in `draw_in` above)
+        // appends its own core-ring and glow-band shapes after this rung's
+        // one welded record — this test is about the WELD, so it looks at
+        // `shapes()[0]` and no longer claims that is the only shape.
+        assert!(dl.shape_len() >= 1, "the rung wrote no silhouette at all");
         let rec = dl.shapes()[0];
         use crate::draw::Shape;
         assert_eq!(rec.flags & Shape::FILL, Shape::FILL, "the wash did not weld");
@@ -651,16 +674,21 @@ pub(crate) mod tests {
         // the wash: a weld that started one quad too early would have
         // washed the frost out of its own surface, and the rung would
         // still draw, still weld, still be one record.
+        //
+        // Sliced to `6..12`, not `6..`: the weld is 6 core verts and 6
+        // wash verts, twelve in all, and glow (2026-08-23) appends its
+        // own verts after them — verts this assertion is not about.
         let wash = col(t.color(theme::id("elev.popover.glass.wash").unwrap())).to_array();
         assert!(dl.verts[..6].iter().all(|v| v.color == rec.tint), "the core lost its tint");
-        assert!(dl.verts[6..].iter().all(|v| v.color == wash), "the wash did not land");
+        assert!(dl.verts[6..12].iter().all(|v| v.color == wash), "the wash did not land");
         // The core is still the tessellated glass lane; the band is the
-        // field's. Both, and nothing on the plain shape lane, which
-        // reads no blurred target at all.
+        // field's. Both landed. (Until 2026-08-23 nothing here also
+        // touched the plain shape lane; glow's own burned core does now,
+        // legitimately, so that lane's presence no longer says anything
+        // about the WELD and is not asserted against.)
         let lanes: Vec<_> = dl.runs.iter().filter_map(|r| r.image).collect();
         assert!(lanes.contains(&crate::draw::GLASS_RANK_2), "{lanes:?}");
         assert!(lanes.contains(&crate::draw::SHAPE_GLASS_2), "{lanes:?}");
-        assert!(!lanes.contains(&crate::draw::SHAPE), "{lanes:?}");
         // And off the lane the rung draws what it always drew: fans,
         // no records at all.
         let mut old = DrawList::new();

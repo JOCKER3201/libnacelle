@@ -603,13 +603,17 @@ mod tests {
         );
         let mut dl = DrawList::recording();
         level().draw_in(&mut dl, &t, box_(), box_(), AT_REST);
+        // Filtered to the GRADIENT ring specifically, and not `Ring` too:
+        // the master's own panel_edge ships lit since 2026-08-23, and a
+        // window now also burns a plain, solid-colour `Ring` core for its
+        // glow — a real second ring this test is not about.
         let rings: Vec<_> = dl
             .cmds()
             .iter()
-            .filter(|c| matches!(c, DrawCmd::Ring { .. } | DrawCmd::RingGrad { .. }))
+            .filter(|c| matches!(c, DrawCmd::RingGrad { .. }))
             .cloned()
             .collect();
-        assert_eq!(rings.len(), 1, "a window strokes its ring once: {rings:?}");
+        assert_eq!(rings.len(), 1, "a window strokes its gradient ring once: {rings:?}");
         match &rings[0] {
             DrawCmd::RingGrad { near, far, dir, .. } => {
                 let want = t.color(theme::id("component.panel.border").unwrap());
@@ -670,16 +674,29 @@ mod tests {
     /// This IS the owner's own file. `~/.local/share/nacelle-desktop/`
     /// carries a theme whose whole `[glow]` section is
     /// `panel_edge.enabled = true` — the editor's old NEON, saved before
-    /// the kind had a second meaning. The radius and the alpha are added
-    /// here because the master ships both at zero and `panel_edge_glow`
-    /// returns there, so without them the picture being compared would be
-    /// two empty lists.
-    fn a_halo_theme() -> theme::ResolvedTheme {
+    /// the kind had a second meaning, and silent about a falloff. Until
+    /// 2026-08-23 that silence inherited the master's `gauss` and this
+    /// theme drew a halo; the master's own falloff is `tube` now, so the
+    /// same file inherits NEON instead — the name below says what the
+    /// token declares (nothing), not what the picture used to be.
+    fn a_silent_falloff_theme() -> theme::ResolvedTheme {
         theme::bake_over_master(
             "[glow]\n\
              panel_edge.enabled = true\n\
              panel_edge.radius = 2.0u\n\
              panel_edge.alpha = 0.34\n",
+        )
+    }
+
+    /// The same theme with the halo's own word, spoken rather than
+    /// inherited — for a proof that needs the shape and not the silence.
+    fn a_gauss_theme() -> theme::ResolvedTheme {
+        theme::bake_over_master(
+            "[glow]\n\
+             panel_edge.enabled = true\n\
+             panel_edge.radius = 2.0u\n\
+             panel_edge.alpha = 0.34\n\
+             panel_edge.falloff = gauss # enum: linear | quad | gauss | halo | tube\n",
         )
     }
 
@@ -755,7 +772,7 @@ mod tests {
     /// and this is where that is checked.
     #[test]
     fn renaming_the_halo_moved_no_pixel() {
-        let t = a_halo_theme();
+        let t = a_gauss_theme();
         let edge = Color { r: 0.35, g: 0.62, b: 0.94, a: 1.0 };
         let c = [Corner::round(9.0); 4];
         let mut was = DrawList::recording();
@@ -770,20 +787,21 @@ mod tests {
         same_picture(&was, &now);
     }
 
-    /// THE OWNER'S SAVED THEME OPENS ON THE HALO, NOT ON THE TUBE.
+    /// THE OWNER'S SAVED THEME NOW OPENS ON THE TUBE, NOT THE HALO.
     ///
-    /// A file that says `panel_edge.enabled = true` and nothing else
-    /// about a falloff inherits the master's `gauss`, and `gauss` is not
-    /// `tube`. Stated against the PICTURE and not against the word,
-    /// because the word is only worth what it draws: the theme lays one
-    /// glow ring at the unshaped profile and no core over its border.
+    /// Until 2026-08-23 a file that said `panel_edge.enabled = true` and
+    /// nothing else about a falloff inherited the master's `gauss`. The
+    /// master's own falloff moved to `tube` that day (the neon-by-default
+    /// change), so the same sparse file now inherits NEON — the picture
+    /// is asserted equal to a theme that names `tube` outright, not just
+    /// "not the halo," so a build where inheritance quietly stopped
+    /// reaching the master would fail here too.
     ///
-    /// The counter-example is drawn beside it. Without it the test would
-    /// pass on a build where `tube` never resolves at all — the way a
-    /// misspelt token passes every test that only ever asks for the
-    /// default.
+    /// `gauss` did not stop being a real profile; it stopped being what
+    /// silence resolves to. A theme that still asks for it by name gets
+    /// exactly the halo it always did, core-less ring included.
     #[test]
-    fn a_theme_that_names_no_falloff_stays_a_halo() {
+    fn a_theme_that_names_no_falloff_inherits_the_tube() {
         let edge = Color { r: 0.35, g: 0.62, b: 0.94, a: 1.0 };
         let c = [Corner::round(9.0); 4];
         let profiles = |t: &theme::ResolvedTheme| -> Vec<crate::draw::GlowProfile> {
@@ -797,26 +815,32 @@ mod tests {
                 })
                 .collect()
         };
-        let silent = a_halo_theme();
+        let silent = a_silent_falloff_theme();
+        let spoken = profiles(&a_tube_theme());
         assert_eq!(
             profiles(&silent),
-            vec![crate::draw::GlowProfile::HALO],
-            "a theme that says nothing about a falloff was given a shaped one"
+            spoken,
+            "a theme that says nothing about a falloff no longer matches the word `tube`"
         );
-        let mut dl = DrawList::recording();
-        panel_edge_glow(&mut dl, &silent, box_(), &c, 6, edge, A_BORDER, AT_REST);
-        assert!(
-            !dl.cmds().iter().any(|c| matches!(c, DrawCmd::Ring { .. })),
-            "the halo burned a core over the border: {:?}",
-            dl.cmds()
-        );
-        let spoken = profiles(&a_tube_theme());
-        assert_eq!(spoken.len(), 1, "a lit tube drew {} glows", spoken.len());
         assert!(
             !spoken[0].is_halo(),
             "the word `tube` reached nothing — {:?} is still the halo, so the \
              claim above is about a build where the word does not resolve",
             spoken[0]
+        );
+
+        let named_gauss = a_gauss_theme();
+        assert_eq!(
+            profiles(&named_gauss),
+            vec![crate::draw::GlowProfile::HALO],
+            "a theme that names gauss outright was not given the halo"
+        );
+        let mut dl = DrawList::recording();
+        panel_edge_glow(&mut dl, &named_gauss, box_(), &c, 6, edge, A_BORDER, AT_REST);
+        assert!(
+            !dl.cmds().iter().any(|c| matches!(c, DrawCmd::Ring { .. })),
+            "the halo burned a core over the border: {:?}",
+            dl.cmds()
         );
     }
 
@@ -1025,29 +1049,43 @@ mod tests {
         assert!((core.a - edge.a).abs() < 1e-6, "the drive moved the coverage, not the light");
     }
 
-    /// THE TUBE IS A THEME'S DECISION, NEVER A DEFAULT.
+    /// EACH OF THE THREE SWITCHES SILENCES THE TUBE ON ITS OWN.
     ///
-    /// The master names the tube's whole dress — a drive, a decay, a band
-    /// and its reach — and lights none of it: the class ships disabled at
-    /// a reach of zero and an amount of zero, and each of those three on
-    /// its own is enough to draw nothing. So a theme that asks for `tube`
-    /// and stops there gets a border and no light, which is the raw look
-    /// the governing principle asks for.
+    /// Until 2026-08-23 the master shipped `panel_edge` disabled, at a
+    /// reach of zero and an amount of zero, so naming `tube` alone drew
+    /// nothing and that WAS the governing principle: a tube is a theme's
+    /// decision, never a default. That guarantee is retired on purpose —
+    /// the master itself is now an enabled, reached, amounted tube, which
+    /// is the neon-by-default change this file's own name argues against
+    /// and lost. What survives it: turn any ONE of the three off
+    /// explicitly, whatever the other two say, and the glow still draws
+    /// nothing.
     #[test]
-    fn a_tube_the_theme_never_lit_draws_nothing() {
+    fn any_one_switch_off_silences_the_tube() {
         let edge = Color { r: 0.42, g: 0.14, b: 0.86, a: 0.9 };
         let c = [Corner::round(9.0); 4];
         let decl = "panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube\n";
         for (what, extra) in [
-            ("the word alone", String::from(decl)),
-            ("the word and the flag", format!("panel_edge.enabled = true\n{decl}")),
             (
-                "the word, the flag and a reach",
-                format!("panel_edge.enabled = true\npanel_edge.radius = 2.0u\n{decl}"),
+                "disabled",
+                format!(
+                    "panel_edge.enabled = false\npanel_edge.radius = 2.0u\n\
+                     panel_edge.alpha = 0.34\n{decl}"
+                ),
             ),
             (
-                "the word, the flag and an amount",
-                format!("panel_edge.enabled = true\npanel_edge.alpha = 0.34\n{decl}"),
+                "no reach",
+                format!(
+                    "panel_edge.enabled = true\npanel_edge.radius = 0u\n\
+                     panel_edge.alpha = 0.34\n{decl}"
+                ),
+            ),
+            (
+                "no amount",
+                format!(
+                    "panel_edge.enabled = true\npanel_edge.radius = 2.0u\n\
+                     panel_edge.alpha = 0.0\n{decl}"
+                ),
             ),
         ] {
             let t = theme::bake_over_master(&format!("[glow]\n{extra}"));
