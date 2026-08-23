@@ -111,6 +111,16 @@ fn col(c: theme::ThemeColor) -> Color {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
     Argb,
+    /// Six hex digits, no alpha byte at all — not even a dropped one. The
+    /// three byte notations otherwise carry alpha unconditionally
+    /// (`write`'s own head note), which is right for a colour a slider
+    /// can fade and wrong for one that never had a fade to begin with: a
+    /// control whose transparency lives entirely in a SEPARATE knob (a
+    /// picker fed by `Settings::tone_bed`, say, with an OPACITY slider of
+    /// its own) has nothing honest to put in an alpha byte, and RGB is
+    /// the notation that says so by construction rather than by writing
+    /// `FF` and hoping nobody reads it as a promise.
+    Rgb,
     Rgba,
     Oklch,
     Hsv,
@@ -122,8 +132,15 @@ impl Format {
     /// The offer, in the order the control steps through it. ARGB stands
     /// first because it is the default and a cycler that starts anywhere
     /// else would make the default the hardest one to get back to.
-    pub const ALL: [Format; 6] =
-        [Format::Argb, Format::Rgba, Format::Oklch, Format::Hsv, Format::Hsl, Format::Dec];
+    pub const ALL: [Format; 7] = [
+        Format::Argb,
+        Format::Rgb,
+        Format::Rgba,
+        Format::Oklch,
+        Format::Hsv,
+        Format::Hsl,
+        Format::Dec,
+    ];
 
     /// The word on the button. Upper case like every other word this
     /// window puts on a plate; the CASE is the type role's business
@@ -131,6 +148,7 @@ impl Format {
     pub fn word(self) -> &'static str {
         match self {
             Format::Argb => "ARGB",
+            Format::Rgb => "RGB",
             Format::Rgba => "RGBA",
             Format::Oklch => "OKLCH",
             Format::Hsv => "HSV",
@@ -226,6 +244,10 @@ pub fn write(c: Color, f: Format) -> String {
     let (r, g, b, a) = (q8(c.r), q8(c.g), q8(c.b), q8(c.a));
     match f {
         Format::Argb => format!("#{a:02X}{r:02X}{g:02X}{b:02X}"),
+        // No `a` in the format string at all — the byte is computed above
+        // for every other arm's sake and simply unused here, which is the
+        // whole difference from RGBA.
+        Format::Rgb => format!("#{r:02X}{g:02X}{b:02X}"),
         Format::Rgba => format!("#{r:02X}{g:02X}{b:02X}{a:02X}"),
         // The theme's own spelling, called and not copied: one program,
         // one way of writing a colour into a file.
@@ -286,7 +308,7 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
 pub fn parse(text: &str, f: Format) -> Option<Color> {
     let t = text.trim();
     match f {
-        Format::Argb | Format::Rgba => {
+        Format::Argb | Format::Rgb | Format::Rgba => {
             let h: String = t
                 .trim_start_matches('#')
                 .chars()
@@ -297,8 +319,15 @@ pub fn parse(text: &str, f: Format) -> Option<Color> {
             }
             let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
             match (h.len(), f) {
+                // Six digits is opaque under every hex notation, RGB's
+                // own included — the reading every tool in the world
+                // agrees on (this function's own head note).
                 (6, _) => Some(Color::rgb8(p(0)?, p(2)?, p(4)?)),
                 (8, Format::Argb) => Some(Color::rgba8(p(2)?, p(4)?, p(6)?, p(0)?)),
+                // Eight digits pasted into an RGB field is a value from a
+                // notation that carries alpha; reading it RGBA-style —
+                // the same fallback the catch-all below gives Argb — is
+                // forgiving about which one, not silent about the byte.
                 (8, _) => Some(Color::rgba8(p(0)?, p(2)?, p(4)?, p(6)?)),
                 _ => None,
             }
@@ -1116,17 +1145,22 @@ mod tests {
         // was 0.042 away in OKLCh lightness, which is visible.
         for f in Format::ALL {
             let eps = match f {
-                Format::Argb | Format::Rgba | Format::Dec => 0.5 / 255.0,
+                Format::Argb | Format::Rgb | Format::Rgba | Format::Dec => 0.5 / 255.0,
                 Format::Oklch | Format::Hsv | Format::Hsl => 1e-3,
             };
             let s = write(before, f);
             let back = parse(&s, f).unwrap_or_else(|| panic!("{f:?} cannot read {s}"));
-            for (a, b, ch) in [
-                (back.r, before.r, 'r'),
-                (back.g, before.g, 'g'),
-                (back.b, before.b, 'b'),
-                (back.a, before.a, 'a'),
-            ] {
+            // RGB IS THE ONE EXCEPTION TO ITS OWN RESOLUTION, and on
+            // purpose: it has no alpha byte to lose a HALF a step of — it
+            // has none at all, by the same construction that lets a
+            // control fed by it skip an alpha channel it never meant to
+            // carry (`Format::Rgb`'s own doc). So its round trip is
+            // checked against 1.0, not against `before.a`, everywhere
+            // else in this loop unchanged.
+            let want_a = if f == Format::Rgb { 1.0 } else { before.a };
+            for (a, b, ch) in
+                [(back.r, before.r, 'r'), (back.g, before.g, 'g'), (back.b, before.b, 'b'), (back.a, want_a, 'a')]
+            {
                 approx(a, b, eps, &format!("{f:?} channel {ch}"));
             }
         }
