@@ -46,6 +46,11 @@
 //! * [`plugin`] — the host side of the plugin boundary: the functions a
 //!   plugin draws through, and the wrapper that makes one look like any
 //!   other widget.
+//! * [`wm`] — the window-management vocabulary (JEDEN MODEL OKNA): what
+//!   can be asked of a window and what came back, the same for a window
+//!   built into the desktop and a window of an outside application. The
+//!   application supplies the backend that actually speaks to a
+//!   compositor, the same pattern [`clipboard`] runs on.
 //!
 //! Everything here is platform-independent. Creating a window, opening a
 //! PTY, collecting telemetry and handing audio frames to a device are
@@ -79,6 +84,7 @@ pub mod theme;
 pub mod ui;
 pub mod view;
 pub mod widget;
+pub mod wm;
 
 pub use base::*;
 pub use motion::{Crossfade, Easing, Effect};
