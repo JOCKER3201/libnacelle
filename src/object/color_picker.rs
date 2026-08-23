@@ -10,6 +10,47 @@
 //! has a home of its own and a straight bar was never it. The names
 //! below are written for the wheel already in force.)
 //!
+//! THE FIELD IS A SQUARE, since 2026-08-23: `layout_with`'s box was
+//! already a square (the wheel note directly below explains why it is a
+//! DISC drawn inside one), so the frame the field wears no longer forces
+//! a circle — it is the ordinary square/chamfered corner every other part
+//! of this control wears (`shape`, `frame`, `handle`), and the wheel's
+//! own triangulation is widened by one more band per wedge, from the rim
+//! it used to stop at out to the square's own edge, so nothing between
+//! the inscribed circle and the field's own corners is left unpainted.
+//! [`square_reach`] is the closed form for how far that band reaches at a
+//! given angle, and it is flat-coloured at the rim's own colour, because
+//! `wheel_pick`'s overshoot rule already established that saturation
+//! pins past r = 1 — there is nothing to interpolate.
+//!
+//! A SQUARE AND NOT A CIRCLE IS ALSO WHY A WIDE GAMUT HAS SOMEWHERE TO
+//! DRAW ITSELF. When `draw()` is handed a [`GamutSpace`], it walks the
+//! wheel's own hue spokes and asks OKLCh, at each spoke's own lightness
+//! and hue, how much chroma a wide gamut (Display P3, Adobe RGB,
+//! BT.2020) holds there against how much sRGB does — `Color::max_chroma_in`
+//! (`theme::color`), the SAME 22-step bisection §6.2 states, generalised
+//! to arbitrary primaries and never reimplemented. The ratio is a
+//! radius, `wheel_point_unclamped` places it, and `DrawList::polyline`
+//! draws the whole closed curve: 1.0 exactly on the wheel's own rim for
+//! sRGB, past 1.0 wherever the wider gamut reaches beyond it — and it can
+//! reach past 1.0 because the field is a square with corners at √2, not a
+//! circle with nowhere further to go.
+//!
+//! HDR LUMINANCE IS A SECOND, ADDITIONAL BAR, not a reinterpretation of
+//! the value bar above: the value bar keeps meaning SDR value, in every
+//! space, always. When `space` names an HDR ceiling
+//! (`GamutSpace::hdr_ceiling_nits`), `layout_with` hangs one more bar off
+//! the right of the value bar and narrows the field to make room —
+//! `Layout.luminance` is `None`, not merely undrawn, the rest of the time,
+//! so an SDR layout is byte-identical to the one before this control knew
+//! HDR existed. `Picker::colour_hdr` is what the bar's own axis reports:
+//! the chosen hue and saturation at `Picker::nits` of peak luminance
+//! against a `SDR_REFERENCE_NITS` (203 cd/m², ITU-R BT.2408) diffuse
+//! white, linear and UNCLAMPED — the same discipline
+//! `Color::from_oklch_unmapped` states for the extended-range escape
+//! hatch, because the caller's own scRGB/PQ output stage owns the clamp
+//! and this control does not get to guess it.
+//!
 //! WHY AN OBJECT AND NOT A PAGE OF SLIDERS. Until 2026-08-18 a colour in
 //! the theme editor was three sliders — brightness, saturation, hue —
 //! and thirteen colours were thirty-nine rows in which the one thing you
@@ -262,9 +303,34 @@ pub fn bar_colour(h: f32, s: f32, fy: f32) -> (f32, f32, f32) {
 /// centre, which is what round-tripping through the two needs and all
 /// they promise.
 pub fn wheel_point(hue_deg: f32, sat: f32) -> (f32, f32) {
+    wheel_point_unclamped(hue_deg, sat.clamp(0.0, 1.0))
+}
+
+/// [`wheel_point`] without the saturation clamp — for the gamut-boundary
+/// curve, whose radius is a wide gamut's chroma against sRGB's own at the
+/// same lightness and hue, and legitimately exceeds 1.0 wherever that
+/// gamut reaches past the wheel's inscribed rim toward the square field's
+/// own corners. Every OTHER caller wants the clamp — a handle's own
+/// position is never past the wheel it stands on — which is why this is
+/// a second function and not `wheel_point` with an argument nobody but
+/// the curve would ever pass differently.
+pub fn wheel_point_unclamped(hue_deg: f32, sat: f32) -> (f32, f32) {
     let r = hue_deg.to_radians();
-    let s = sat.clamp(0.0, 1.0);
-    (0.5 + 0.5 * s * r.cos(), 0.5 + 0.5 * s * r.sin())
+    (0.5 + 0.5 * sat * r.cos(), 0.5 + 0.5 * sat * r.sin())
+}
+
+/// How far a ray at angle `theta` (radians, the wheel's own hue angle)
+/// travels from the centre of a square before it leaves the square,
+/// expressed as a multiple of the inscribed circle's own radius: 1.0 at
+/// an edge's midpoint, `√2` at a corner. The closed form for a unit
+/// square centred on the origin is `1 / max(|cos θ|, |sin θ|)` — whichever
+/// axis the ray is closer to end-on is the one whose edge it reaches
+/// first — and it is exact, not an approximation the way the wheel's own
+/// wedges are: a square has four straight edges and this is their
+/// equation, not a tessellation of them.
+pub fn square_reach(theta: f32) -> f32 {
+    let (c, s) = (theta.cos().abs(), theta.sin().abs());
+    1.0 / c.max(s).max(1e-6)
 }
 
 /// The inverse of [`wheel_point`]: a press or a drag at local-fractional
@@ -497,7 +563,36 @@ fn numbers(t: &str, name: &str) -> Option<(Vec<f32>, Option<f32>)> {
     Some((n, tail))
 }
 
+// --------------------------------------------------------------- the space
+
+/// The active output space's own boundary and (when it applies) its HDR
+/// ceiling — a plain value the CALLER supplies, the same way `custom:
+/// &[Color]` and `id_of: impl Fn(Part) -> FocusId` already reach this
+/// control. This crate has no dependency on a host application's own
+/// notion of a colour space (`SpaceRange`, `ColorConf` and the like, in
+/// `nacelle-desktop`'s case); whatever those types resolve to becomes two
+/// numbers and a struct before it crosses into this one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GamutSpace {
+    /// The space's own primaries — what the gamut-boundary curve is
+    /// measured against (`theme::color::Primaries`).
+    pub primaries: theme::color::Primaries,
+    /// `Some(ceiling_nits)` when the caller's own space is HDR, and that
+    /// is the luminance bar's own top; `None` for SDR, and the bar does
+    /// not exist — `Layout.luminance` stays `None`, not merely undrawn.
+    pub hdr_ceiling_nits: Option<f32>,
+}
+
 // --------------------------------------------------------------- the model
+
+/// The reference white a picker's HDR gain is measured against: ITU-R
+/// BT.2408's diffuse-white / SDR-reference level, 203 cd/m² — the figure
+/// broadcast HDR pipelines calibrate "this looks like ordinary SDR white"
+/// against. A technical calibration constant and not a theme aesthetic
+/// (unlike [`GamutSpace::hdr_ceiling_nits`], which is `picker.hdr_nits`
+/// precisely because IT is one), so it stands here in Rust rather than in
+/// `[picker]`.
+pub const SDR_REFERENCE_NITS: f32 = 203.0;
 
 /// What the control holds between frames.
 ///
@@ -518,12 +613,19 @@ pub struct Picker {
     alpha: f32,
     /// Which notation the text side is written in.
     pub format: Format,
+    /// The HDR luminance bar's own axis, in cd/m² — independent of `hsv`,
+    /// the same way `hsv`'s three channels are independent of each other.
+    /// Meaningless whenever the caller's space is SDR (nothing reads it
+    /// then: `layout_with` draws no bar for it to answer), and NEVER
+    /// clamped to any particular ceiling here, because the ceiling is
+    /// `picker.hdr_nits` and this struct does not read the theme.
+    nits: f32,
 }
 
 impl Picker {
     /// A picker opened on a colour.
     pub fn of(c: Color) -> Picker {
-        let mut p = Picker { hsv: [0.0, 0.0, 0.0], alpha: 1.0, format: Format::Argb };
+        let mut p = Picker { hsv: [0.0, 0.0, 0.0], alpha: 1.0, format: Format::Argb, nits: SDR_REFERENCE_NITS };
         p.set_colour(c);
         p
     }
@@ -624,6 +726,42 @@ impl Picker {
         self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
     }
 
+    /// The HDR luminance bar's handle, 0..1 from its top (`ceiling_nits`)
+    /// to its bottom (0 nits) — [`Picker::value_at`]'s own shape, read on
+    /// a different axis: nits instead of SDR value, and a ceiling the
+    /// CALLER states (`picker.hdr_nits`, read by the caller, not by this
+    /// struct) rather than a fixed 1.0.
+    pub fn luminance_at(&self, ceiling_nits: f32) -> f32 {
+        if ceiling_nits <= 0.0 {
+            return 1.0;
+        }
+        1.0 - (self.nits / ceiling_nits).clamp(0.0, 1.0)
+    }
+
+    /// A press or a drag along the luminance bar: nits from y, against
+    /// the same `ceiling_nits` its own handle position is read against —
+    /// the two must agree or a drag to the bar's own top would not land
+    /// on the ceiling it appears to be pointing at.
+    pub fn pick_luminance(&mut self, fy: f32, ceiling_nits: f32) {
+        self.nits = (1.0 - fy.clamp(0.0, 1.0)) * ceiling_nits.max(0.0);
+    }
+
+    /// The picked colour scaled to `self.nits` of peak luminance against
+    /// `ref_nits` of reference white ([`SDR_REFERENCE_NITS`] at every
+    /// call site this crate has), LINEAR and UNCLAMPED — the caller's own
+    /// scRGB/PQ output stage owns the clamp, same discipline
+    /// `Color::from_oklch_unmapped` already states for the extended-range
+    /// escape hatch (`theme::color`). Reuses `hsv_to_rgb` and `to_linear`
+    /// exactly as [`Picker::colour`] does and adds one multiplicative
+    /// gain step — the file's existing "decode on the way in" discipline,
+    /// not a parallel HDR colour law of its own.
+    pub fn colour_hdr(&self, ref_nits: f32) -> Color {
+        let (r, g, b) = hsv_to_rgb(self.hsv[0], self.hsv[1], self.hsv[2]);
+        let gain = self.nits / ref_nits.max(1e-6);
+        let lin = Color { r, g, b, a: self.alpha }.to_linear();
+        Color { r: lin.r * gain, g: lin.g * gain, b: lin.b * gain, a: lin.a }
+    }
+
     /// The colour as text, in the notation in force.
     pub fn text(&self) -> String {
         write(self.colour(), self.format)
@@ -686,6 +824,15 @@ pub struct Layout {
     /// The caller's own, and the cell that banks the current colour.
     pub custom: Vec<Rect>,
     pub add: Rect,
+    /// The HDR luminance bar, hung off the right of the value bar —
+    /// `Some` only when the caller's own space names an HDR ceiling
+    /// (`GamutSpace::hdr_ceiling_nits`). ABSENT, NOT MERELY UNDRAWN, the
+    /// rest of the time: an SDR layout never budgets width for this bar
+    /// and so never has to reclaim it, the same "a part that is drawn is
+    /// a part that can be reached" principle [`parts`] states, read
+    /// backwards — a part that does not exist claims no place in the Tab
+    /// chain either.
+    pub luminance: Option<Rect>,
 }
 
 /// What one part of the control answers to.
@@ -698,6 +845,9 @@ pub enum Part {
     Base(usize),
     Custom(usize),
     Add,
+    /// The HDR luminance bar — only ever produced by [`parts`] when
+    /// [`Layout::luminance`] is `Some`.
+    Luminance,
 }
 
 /// The numbers `[picker]` states, read once per call and passed around
@@ -716,6 +866,10 @@ struct Metrics {
     swatch_gap: f32,
     cols: usize,
     base_count: usize,
+    /// The HDR luminance bar's own width — read whether or not HDR is in
+    /// force, like every other number [`Metrics`] holds; whether it is
+    /// USED is `layout_with`'s question, not this one's.
+    luminance_w: f32,
 }
 
 impl Metrics {
@@ -732,6 +886,7 @@ impl Metrics {
         static COLS: OnceLock<TokenId> = OnceLock::new();
         static BASE_N: OnceLock<TokenId> = OnceLock::new();
         static PAD_X: OnceLock<TokenId> = OnceLock::new();
+        static LUMINANCE_W: OnceLock<TokenId> = OnceLock::new();
         let t = theme::resolved();
         Metrics {
             gap: t.px(tok(&GAP, "picker.gap")),
@@ -748,6 +903,7 @@ impl Metrics {
             // division by zero, and a theme is a file a person edits.
             cols: (t.px(tok(&COLS, "picker.swatch_cols")).round() as usize).max(1),
             base_count: offered(t.px(tok(&BASE_N, "picker.base_count"))),
+            luminance_w: t.px(tok(&LUMINANCE_W, "picker.luminance_w")),
         }
     }
 }
@@ -790,25 +946,26 @@ fn offered(wish: f32) -> usize {
 }
 
 /// How tall the control stands in a band `w` wide, offering `custom`
-/// colours of the caller's own.
+/// colours of the caller's own, in the active output `space` (`None` for
+/// no colour management at all — see [`GamutSpace`]).
 ///
 /// Asked BEFORE the row is laid out, and answered from the same numbers
 /// AND the same count the layout uses — a height that disagreed with the
 /// layout would leave the swatches drawn over the row below, and it would
 /// start disagreeing on the day somebody banked a ninth colour.
-pub fn height(w: f32, custom: usize) -> f32 {
+pub fn height(w: f32, custom: usize, space: Option<GamutSpace>) -> f32 {
     let m = Metrics::read();
-    layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), custom).1
+    layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), custom, space).1
 }
 
 /// Where everything stands inside `area`, for a picker offering `custom`
-/// colours of its own.
-pub fn layout(area: Rect, custom: usize) -> Layout {
+/// colours of its own in the active output `space`.
+pub fn layout(area: Rect, custom: usize, space: Option<GamutSpace>) -> Layout {
     let m = Metrics::read();
-    layout_with(&m, area, custom).0
+    layout_with(&m, area, custom, space).0
 }
 
-fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
+fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>) -> (Layout, f32) {
     // NOTHING MAY LEAVE THE BAND, AND THE BAND IS THE ONLY NUMBER HERE
     // THAT IS NOT THE THEME'S. Every width below is the theme's wish
     // clamped by the room there is, in that order, because the two are
@@ -821,15 +978,25 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
     // 30 px the first ready-made cell stood 29.4 px outside.
     let band = area.w.max(0.0);
     let value_w = m.value_w.min(band);
-    let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
+    let hdr_ceiling = space.and_then(|s| s.hdr_ceiling_nits);
+    // THE LUMINANCE BAR IS RESERVED ONLY WHEN HDR IS ACTIVE, and this is
+    // the one place that decision is made: `extra` is exactly zero in
+    // every other case, so `left_w`/`box_w`/`value` below are BYTE
+    // IDENTICAL to the layout before this control knew HDR existed —
+    // nothing widens or is left blank when HDR is off, the field only
+    // narrows when it turns on.
+    let luminance_w = if hdr_ceiling.is_some() { m.luminance_w.min(band) } else { 0.0 };
+    let extra = if hdr_ceiling.is_some() { luminance_w + m.gap } else { 0.0 };
+    let left_w = (band * m.field_w_frac).max(value_w + extra + m.gap).min(band);
     // THE WHEEL IS A CIRCLE INSCRIBED IN THE SAME BOX THE OLD RECTANGULAR
     // FIELD FILLED, centred rather than stretched to it: a disk stretched
     // to a box that is not square would draw an ellipse, and an ellipse
     // is not a hue wheel, it is a hue wheel that has been sat on. The box
     // itself is unchanged — same width, same `m.field_h` — so nothing
     // downstream that reasons about the BOX (`right_h`, `strip_y`) has to
-    // change; only what is drawn inside it shrank to a square.
-    let box_w = (left_w - m.gap - value_w).max(0.0);
+    // change; only what is drawn inside it shrank to a square, and (in
+    // HDR) narrowed again to make room for the luminance bar.
+    let box_w = (left_w - m.gap - value_w - extra).max(0.0);
     let box_h = m.field_h;
     let diameter = box_w.min(box_h).max(0.0);
     let field = Rect::new(
@@ -841,7 +1008,12 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
     // The bar is hung from the RIGHT of the left column rather than from
     // the field's edge. With room the two are the same point to the last
     // bit; without it, this one is still inside the band.
-    let value = Rect::new(area.x + left_w - value_w, area.y, value_w, m.field_h);
+    let value = Rect::new(area.x + left_w - value_w - extra, area.y, value_w, m.field_h);
+    // The luminance bar, hung off the RIGHT of the value bar in turn —
+    // `None` unless HDR asked for one, per [`Layout::luminance`]'s own
+    // "absent, not merely undrawn" contract.
+    let luminance =
+        hdr_ceiling.map(|_| Rect::new(value.right() + m.gap, area.y, luminance_w, m.field_h));
     let rw = (band - left_w - m.gap).max(0.0);
     let rx = (area.x + left_w + m.gap).min(area.x + band);
     let patch = Rect::new(rx, area.y, rw, m.patch_h);
@@ -883,7 +1055,7 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
         m.row_h,
     );
     (
-        Layout { field, value, patch, format, text, base, custom: custom_rects, add },
+        Layout { field, value, patch, format, text, base, custom: custom_rects, add, luminance },
         text.bottom() - area.y,
     )
 }
@@ -905,6 +1077,12 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
 /// so it is a statement about reading and not about precedence.
 pub fn parts(l: &Layout) -> Vec<(Part, Rect)> {
     let mut out = vec![(Part::Field, l.field), (Part::Value, l.value)];
+    // Right beside the value bar it stands next to, and only when it
+    // exists at all — the "absent, not merely undrawn" contract
+    // [`Layout::luminance`] states held all the way to the Tab chain.
+    if let Some(r) = l.luminance {
+        out.push((Part::Luminance, r));
+    }
     out.extend(l.base.iter().enumerate().map(|(i, r)| (Part::Base(i), *r)));
     out.extend(l.custom.iter().enumerate().map(|(i, r)| (Part::Custom(i), *r)));
     out.push((Part::Add, l.add));
@@ -989,36 +1167,6 @@ fn frame(ctx: &mut Ctx, r: Rect) {
     );
 }
 
-/// A full circle inscribed in `r`, the corner language every OTHER part
-/// of this control reads from `picker.corner_style`/`picker.corner`
-/// deliberately overridden here: a chamfered or square-cornered ring
-/// drawn over a disk is not a second look this control could wear, it is
-/// the wheel's own boundary drawn wrong. `r.w.min(r.h)` rather than
-/// assuming square — the wheel is always square by construction
-/// ([`layout_with`]), but a shape helper that only works on its one
-/// caller's own invariant is a trap for the next one.
-fn ring_shape(r: Rect) -> ([Corner; 4], f32) {
-    let radius = r.w.min(r.h) * 0.5;
-    ([Corner::round(radius); 4], radius)
-}
-
-/// The wheel's own frame: [`ring_shape`]'s circle, [`frame`]'s ring.
-fn wheel_frame(ctx: &mut Ctx, r: Rect) {
-    static BORDER: OnceLock<TokenId> = OnceLock::new();
-    static EDGE: OnceLock<TokenId> = OnceLock::new();
-    static SEGMENTS: OnceLock<TokenId> = OnceLock::new();
-    let t = theme::resolved();
-    let (c, radius) = ring_shape(r);
-    let seg = super::window::corner_segments(t, &SEGMENTS, radius);
-    ctx.dl.ring(
-        r,
-        &c,
-        seg,
-        t.px(tok(&BORDER, "picker.border")),
-        col(t.color(tok(&EDGE, "component.picker.edge"))),
-    );
-}
-
 /// The handle that marks a chosen point: a ring, because a filled mark
 /// would hide the very colour it is pointing at.
 fn handle(ctx: &mut Ctx, at: Rect) {
@@ -1035,36 +1183,17 @@ fn handle(ctx: &mut Ctx, at: Rect) {
     );
 }
 
-/// The wheel's own handle: forced round, like [`wheel_frame`] — a
-/// square or chamfered marker sitting on a disk would be the one corner
-/// language in the whole control that visibly disagreed with the shape
-/// under it. The bar's handle is unchanged: a straight track wears
-/// whatever corner language the rest of the control does, because a
-/// track is not a shape a handle could visibly disagree with.
-fn wheel_handle(ctx: &mut Ctx, at: Rect) {
-    static STROKE: OnceLock<TokenId> = OnceLock::new();
-    static INK: OnceLock<TokenId> = OnceLock::new();
-    static SEGMENTS: OnceLock<TokenId> = OnceLock::new();
-    let t = theme::resolved();
-    let (c, radius) = ring_shape(at);
-    let seg = super::window::corner_segments(t, &SEGMENTS, radius);
-    ctx.dl.ring(
-        at,
-        &c,
-        seg,
-        t.px(tok(&STROKE, "picker.handle_stroke")),
-        col(t.color(tok(&INK, "component.picker.handle"))),
-    );
-}
-
-/// Draws the whole control. `custom` are the caller's own colours; the
+/// Draws the whole control in the active output `space` (`None` for no
+/// colour management at all). `custom` are the caller's own colours; the
 /// picker keeps none of its own, because a swatch a person banked
 /// outlives the frame and the control does not.
-pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
+pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color], space: Option<GamutSpace>) {
     static HUE_STOPS: OnceLock<TokenId> = OnceLock::new();
     static HANDLE_R: OnceLock<TokenId> = OnceLock::new();
     static ROLE: OnceLock<TokenId> = OnceLock::new();
     static TEXT_INK: OnceLock<TokenId> = OnceLock::new();
+    static EDGE: OnceLock<TokenId> = OnceLock::new();
+    static BORDER: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
     // Read straight off the model: value is `hsv`'s own third coordinate,
     // and the wheel below bakes it into every ring it draws — there is no
@@ -1074,23 +1203,31 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
 
     // ---- the wheel: hue swept round the rim, saturation out from the
     // centre, at the bar's own value — one fan for the inner cap, one
-    // quad per ring-and-wedge cell for the rest, NEVER `rect_grad`: the
-    // wheel's own triangulation is exactly its silhouette, so there is
-    // nothing to clip and no `push_clip`/`pop_clip` pair to bracket it in.
-    // `picker.hue_stops` is how finely the circle is sampled, no longer a
-    // metaphor now that the field IS one; [`wheel_tessellation`] is where
-    // it becomes a wedge count and a ring count, and the module header
-    // is where the kink-alignment that buys is argued.
+    // quad per ring-and-wedge cell for the annulus, one more flat quad
+    // per wedge for the square's own corners, NEVER `rect_grad`: the
+    // wheel's own triangulation is exactly the field's silhouette, so
+    // there is nothing to clip and no `push_clip`/`pop_clip` pair to
+    // bracket it in. `picker.hue_stops` is how finely the circle is
+    // sampled, no longer a metaphor now that the field IS one;
+    // [`wheel_tessellation`] is where it becomes a wedge count and a ring
+    // count, and the module header is where the kink-alignment that buys
+    // is argued.
     let n = (t.px(tok(&HUE_STOPS, "picker.hue_stops")).round() as usize).clamp(2, 64);
     let (wedges, rings) = wheel_tessellation(n);
     let cx = l.field.x + l.field.w / 2.0;
     let cy = l.field.y + l.field.h / 2.0;
     let radius = l.field.w.min(l.field.h) / 2.0;
-    let point = |ring: usize, wedge: usize| {
-        let rho = ring as f32 / rings as f32;
+    // `point_r` takes an explicit radius FRACTION rather than a ring
+    // index, so the outer band below — whose outer edge is
+    // [`square_reach`]'s and not a ring boundary at all — can share it
+    // with the annulus loop; `point(ring, wedge)` is `point_r` at that
+    // ring's own fraction, kept as a thin wrapper so the annulus loop
+    // below reads exactly as it always has.
+    let point_r = |rho: f32, wedge: usize| {
         let theta = (wedge as f32 * 360.0 / wedges as f32).to_radians();
         [cx + radius * rho * theta.cos(), cy + radius * rho * theta.sin()]
     };
+    let point = |ring: usize, wedge: usize| point_r(ring as f32 / rings as f32, wedge);
     let colour = |ring: usize, wedge: usize| {
         let rho = ring as f32 / rings as f32;
         let theta = wedge as f32 * 360.0 / wedges as f32;
@@ -1104,11 +1241,11 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
     let rim: Vec<[f32; 2]> = (0..wedges).map(|w| point(1, w)).collect();
     let rim_c: Vec<Color> = (0..wedges).map(|w| colour(1, w)).collect();
     ctx.dl.fan_c([cx, cy], &rim, Color { r: v, g: v, b: v, a: 1.0 }, &rim_c);
-    // The rest: one quad per cell between ring `k` and ring `k+1`, exact
-    // along the radius by construction (HSV is affine in saturation at
-    // fixed hue) and exact across a wedge wherever that wedge's own two
-    // edges sit on one of `hsv_to_rgb`'s six 60° kinks, which `wedges`
-    // being a multiple of six guarantees for every one of them.
+    // The annulus: one quad per cell between ring `k` and ring `k+1`,
+    // exact along the radius by construction (HSV is affine in saturation
+    // at fixed hue) and exact across a wedge wherever that wedge's own
+    // two edges sit on one of `hsv_to_rgb`'s six 60° kinks, which
+    // `wedges` being a multiple of six guarantees for every one of them.
     for ring in 1..rings {
         for w in 0..wedges {
             let w2 = (w + 1) % wedges;
@@ -1118,7 +1255,58 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
             );
         }
     }
-    wheel_frame(ctx, l.field);
+    // The square's own corners: one flat-coloured quad per wedge, from
+    // the wheel's own rim (ring `rings`, saturation exactly 1) out to
+    // [`square_reach`]'s answer at each of the wedge's two edges. FLAT
+    // and not another Gouraud band, because `wheel_pick`'s own overshoot
+    // rule already established that saturation pins at the rim past
+    // r = 1 — every point out here is the SAME colour as the rim point it
+    // grows from, so there is nothing to interpolate toward.
+    for w in 0..wedges {
+        let w2 = (w + 1) % wedges;
+        let theta1 = (w as f32 * 360.0 / wedges as f32).to_radians();
+        let theta2 = (w2 as f32 * 360.0 / wedges as f32).to_radians();
+        let (c1, c2) = (colour(rings, w), colour(rings, w2));
+        ctx.dl.quad_c(
+            [
+                point_r(1.0, w),
+                point_r(1.0, w2),
+                point_r(square_reach(theta2), w2),
+                point_r(square_reach(theta1), w),
+            ],
+            [c1, c2, c2, c1],
+        );
+    }
+    frame(ctx, l.field);
+
+    // ---- the gamut-boundary curve, iff the caller named a space: one
+    // spoke per hue wedge, this spoke's OWN OKLCh lightness and hue (so
+    // the curve is self-consistent with the colours under it — the
+    // module header's "HSV AND NOT OKLCh" ruling fixes what plane the
+    // FIELD is drawn in, not what plane a wide gamut's own chroma is
+    // measured in), and a radius that is a wide gamut's chroma ceiling
+    // there against sRGB's own — 1.0 exactly on the wheel's rim for
+    // sRGB, past it wherever the target gamut reaches beyond sRGB toward
+    // the square's own corners.
+    if let Some(sp) = space {
+        let mut curve: Vec<[f32; 2]> = Vec::with_capacity(wedges);
+        for w in 0..wedges {
+            let h = w as f32 * 360.0 / wedges as f32;
+            let (r, g, b) = hsv_to_rgb(h, 1.0, v);
+            let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
+            let c_target = Color::max_chroma_in(spoke.l, spoke.h, &sp.primaries);
+            let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
+            let radius = c_target / c_srgb.max(1e-6);
+            let (fx, fy) = wheel_point_unclamped(h, radius);
+            curve.push([l.field.x + fx * l.field.w, l.field.y + fy * l.field.h]);
+        }
+        ctx.dl.polyline(
+            &curve,
+            t.px(tok(&BORDER, "picker.border")),
+            col(t.color(tok(&EDGE, "component.picker.edge"))),
+            true,
+        );
+    }
 
     // ---- the bar: value, down to black — restored the same day it left,
     // now that saturation is the wheel's own radius and the bar has
@@ -1136,19 +1324,41 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color]) {
     );
     frame(ctx, l.value);
 
-    // ---- the two handles: the wheel's forced round (a marker matches
-    // the disk it stands on), the bar's own themed shape (a track is not
-    // a shape a handle could visibly disagree with).
+    // ---- the two handles: the field's own themed shape, the same as
+    // every other part of this control since the field went back to
+    // being an ordinary square (`frame`'s own note, module header).
     let hr_px = t.px(tok(&HANDLE_R, "picker.handle"));
     let (fx, fy) = p.field_at();
     let hx = l.field.x + fx * l.field.w;
     let hy = l.field.y + fy * l.field.h;
-    wheel_handle(ctx, Rect::new(hx - hr_px, hy - hr_px, hr_px * 2.0, hr_px * 2.0));
+    handle(ctx, Rect::new(hx - hr_px, hy - hr_px, hr_px * 2.0, hr_px * 2.0));
     let vy = l.value.y + p.value_at() * l.value.h;
     handle(
         ctx,
         Rect::new(l.value.x, vy - hr_px, l.value.w, hr_px * 2.0),
     );
+
+    // ---- the HDR luminance bar, iff `layout_with` reserved one: the
+    // SAME hue/saturation ramp the value bar draws — nothing here asks
+    // the field's own colour to be pushed through `Picker::colour_hdr`'s
+    // unclamped linear gain for the sake of a decorative gradient this
+    // control cannot itself preview correctly (that value is what the
+    // CALLER reads off `Picker::colour_hdr`, not what this bar paints) —
+    // with the handle read against `sp.hdr_ceiling_nits` instead of
+    // against a fixed 1.0.
+    if let (Some(r), Some(ceiling)) = (l.luminance, space.and_then(|sp| sp.hdr_ceiling_nits)) {
+        ctx.dl.rect_grad(
+            r,
+            &[
+                (0.0, Color { r: hr, g: hg, b: hb, a: 1.0 }),
+                (1.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+            ],
+            std::f32::consts::FRAC_PI_2,
+        );
+        frame(ctx, r);
+        let ly = r.y + p.luminance_at(ceiling) * r.h;
+        handle(ctx, Rect::new(r.x, ly - hr_px, r.w, hr_px * 2.0));
+    }
 
     // ---- the patch, over the chequerboard so alpha is visible.
     checker(ctx, l.patch);
@@ -1230,6 +1440,7 @@ pub fn draw_focusable(
     l: &Layout,
     p: &Picker,
     custom: &[Color],
+    space: Option<GamutSpace>,
     id_of: impl Fn(Part) -> FocusId,
 ) {
     let rings: Vec<(Rect, bool)> = parts(l)
@@ -1242,7 +1453,7 @@ pub fn draw_focusable(
             (r, f.map_or(false, |f| f.ring))
         })
         .collect();
-    draw(ctx, l, p, custom);
+    draw(ctx, l, p, custom, space);
     // The rings go on TOP of the whole control, not each beside its own
     // part: a ring drawn before the patch beside it would be painted over
     // by it.
@@ -1553,7 +1764,7 @@ mod tests {
         let m = Metrics::read();
         for w in [520.0f32, 400.0, 300.0, 150.0] {
             let area = Rect::new(30.0, 40.0, w, 0.0);
-            let l = layout(area, 0);
+            let l = layout(area, 0, None);
             let band = area.w.max(0.0);
             let value_w = m.value_w.min(band);
             let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
@@ -1583,8 +1794,8 @@ mod tests {
         // Past a full row of banked colours the grid grows a row, which
         // is the case a height that ignored the count would get wrong.
         for custom in [0usize, 1, 7, 8, 17] {
-            let l = layout(area, custom);
-            let h = height(area.w, custom);
+            let l = layout(area, custom, None);
+            let h = height(area.w, custom, None);
             let low = l
                 .base
                 .iter()
@@ -1609,7 +1820,7 @@ mod tests {
         for custom in [0usize, 1, 7, 8, 17] {
             for w in [520.0f32, 400.0, 300.0, 260.0, 200.0, 150.0, 100.0, 60.0, 30.0, 20.0, 0.0] {
                 let area = Rect::new(30.0, 40.0, w, 0.0);
-                let l = layout(area, custom);
+                let l = layout(area, custom, None);
                 for (part, r) in parts(&l) {
                     assert!(
                         r.x >= area.x - 0.01 && r.right() <= area.x + area.w + 0.01,
@@ -1629,7 +1840,7 @@ mod tests {
                     "the patch runs past the band at width {w}"
                 );
                 approx(
-                    height(w, custom),
+                    height(w, custom, None),
                     parts(&l).iter().fold(area.y, |a, (_, r)| a.max(r.bottom())) - area.y,
                     0.51,
                     &format!("the reported height covers every part at width {w}"),
@@ -1666,7 +1877,7 @@ mod tests {
         let pad = Metrics::read().pad_x;
         // The band the settings window gives it, and comfortably below.
         for w in [520.0f32, 460.0, 400.0] {
-            let l = layout(Rect::new(0.0, 0.0, w, 0.0), 3);
+            let l = layout(Rect::new(0.0, 0.0, w, 0.0), 3, None);
             assert!(
                 l.text.w - pad * 2.0 >= need,
                 "the readout is {} px wide inside its padding at band {w}, \
@@ -1679,7 +1890,7 @@ mod tests {
             .iter()
             .map(|f| readout_px(&mut fonts, f.word()))
             .fold(0.0f32, f32::max);
-        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3);
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3, None);
         assert!(
             l.format.w - pad * 2.0 >= word,
             "the notation's plate is {} px inside its padding, the longest word {word} px",
@@ -1698,9 +1909,9 @@ mod tests {
         assert!(pad > 0.0, "the master gives the plates an inset");
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::recording();
-        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 2);
+        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 2, None);
         let p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
-        draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[Color::WHITE, Color::BLACK]);
+        draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[Color::WHITE, Color::BLACK], None);
         let runs: Vec<[f32; 2]> = dl
             .cmds()
             .iter()
@@ -1730,7 +1941,7 @@ mod tests {
         assert!(asked > 0, "the master declares a grid");
         let mut m = Metrics::read();
         m.base_count = asked;
-        let (l, _) = layout_with(&m, Rect::new(0.0, 0.0, 520.0, 0.0), 0);
+        let (l, _) = layout_with(&m, Rect::new(0.0, 0.0, 520.0, 0.0), 0, None);
         assert_eq!(
             l.base.len(),
             base_colours().len(),
@@ -1771,23 +1982,23 @@ mod tests {
         //! with every assertion in this file passing.
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::recording();
-        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0);
+        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0, None);
         let p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
         let hue_stops = theme::resolved().px(theme::id("picker.hue_stops").expect("declared"));
         let (wedges, rings) = wheel_tessellation((hue_stops.round() as usize).clamp(2, 64));
-        draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[]);
+        draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[], None);
         let cx = l.field.x + l.field.w / 2.0;
         let cy = l.field.y + l.field.h / 2.0;
         let radius = l.field.w.min(l.field.h) / 2.0;
+        let point_at = |rho: f32, wedge: usize| -> [f32; 2] {
+            let theta = (wedge as f32 * 360.0 / wedges as f32).to_radians();
+            [cx + radius * rho * theta.cos(), cy + radius * rho * theta.sin()]
+        };
         let want = |ring: usize, wedge: usize| -> ([f32; 2], Color) {
             let rho = ring as f32 / rings as f32;
             let theta_deg = wedge as f32 * 360.0 / wedges as f32;
             let (r, g, b) = hsv_to_rgb(theta_deg, rho, p.hsv[2]);
-            let theta = theta_deg.to_radians();
-            (
-                [cx + radius * rho * theta.cos(), cy + radius * rho * theta.sin()],
-                Color { r, g, b, a: 1.0 },
-            )
+            (point_at(rho, wedge), Color { r, g, b, a: 1.0 })
         };
         // ---- the cap: one fan, one point per wedge, closed by fan_c's
         // own contract — checked against the reference at ring 1, which
@@ -1825,11 +2036,20 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(quads.len(), (rings - 1) * wedges, "one quad per ring-and-wedge cell past the cap");
-        // The first cell of every ring: the fan above already proves the
-        // wedge law holds all the way ROUND one ring, so this proves it
-        // holds all the way OUT, and the two together cover the grid the
-        // ring/wedge loop in `draw` actually walks.
+        // ONE QUAD PER RING-AND-WEDGE CELL PAST THE CAP, PLUS ONE MORE
+        // PER WEDGE FOR THE SQUARE'S OWN CORNERS (2026-08-23): the
+        // annulus (`rings - 1` bands) and the outer band (always exactly
+        // one band, out to `square_reach`) are both `quad_c`, so the
+        // total grew from `(rings - 1) * wedges` to `rings * wedges`.
+        assert_eq!(
+            quads.len(),
+            rings * wedges,
+            "one quad per ring-and-wedge cell past the cap, plus one outer-band quad per wedge"
+        );
+        // The first cell of every annulus ring: the fan above already
+        // proves the wedge law holds all the way ROUND one ring, so this
+        // proves it holds all the way OUT, and the two together cover the
+        // grid the ring/wedge loop in `draw` actually walks.
         for ring in 1..rings {
             let (verts, cols) = quads[(ring - 1) * wedges];
             let corners = [want(ring, 0), want(ring, 1), want(ring + 1, 1), want(ring + 1, 0)];
@@ -1841,11 +2061,45 @@ mod tests {
                 approx(cols[i].b, corners[i].1.b, 1e-5, &format!("ring {ring} corner {i} blue"));
             }
         }
+        // ---- the outer band: one flat-coloured quad per wedge, from the
+        // rim (ring `rings`, saturation 1) out to `square_reach`'s own
+        // answer at each of the wedge's two edges — every wedge's outer
+        // band, this time, since [`square_reach`]'s own value is what is
+        // under test and it is NOT constant across a wedge's width the
+        // way the annulus's radius fraction is.
+        let outer_base = (rings - 1) * wedges;
+        for w in 0..wedges {
+            let w2 = (w + 1) % wedges;
+            let (verts, cols) = quads[outer_base + w];
+            let theta1 = (w as f32 * 360.0 / wedges as f32).to_radians();
+            let theta2 = (w2 as f32 * 360.0 / wedges as f32).to_radians();
+            let (rim_w, c_w) = want(rings, w);
+            let (rim_w2, c_w2) = want(rings, w2);
+            let corners = [
+                rim_w,
+                rim_w2,
+                point_at(square_reach(theta2), w2),
+                point_at(square_reach(theta1), w),
+            ];
+            let want_cols = [c_w, c_w2, c_w2, c_w];
+            for i in 0..4 {
+                approx(verts[i][0], corners[i][0], 1e-2, &format!("outer band {w} corner {i} x"));
+                approx(verts[i][1], corners[i][1], 1e-2, &format!("outer band {w} corner {i} y"));
+                approx(cols[i].r, want_cols[i].r, 1e-5, &format!("outer band {w} corner {i} red"));
+                approx(cols[i].g, want_cols[i].g, 1e-5, &format!("outer band {w} corner {i} green"));
+                approx(cols[i].b, want_cols[i].b, 1e-5, &format!("outer band {w} corner {i} blue"));
+            }
+            // FLAT, NOT A GRADIENT: both outer corners carry the SAME
+            // colour as the inner corner nearest them — there is nothing
+            // to interpolate toward, per the module header's argument.
+            approx(cols[2].r, cols[1].r, 1e-6, "outer edge is flat, not a second gradient");
+            approx(cols[3].r, cols[0].r, 1e-6, "outer edge is flat, not a second gradient");
+        }
     }
 
     #[test]
     fn every_part_of_the_control_answers_for_itself() {
-        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3);
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3, None);
         let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let (x, y) = mid(l.field);
         assert_eq!(hit(&l, x, y), Some(Part::Field));
@@ -1878,5 +2132,189 @@ mod tests {
         approx(base[0].r, accent.r, 1e-5, "the first cell is the accent");
         approx(base[0].g, accent.g, 1e-5, "the first cell is the accent");
         approx(base[0].b, accent.b, 1e-5, "the first cell is the accent");
+    }
+
+    #[test]
+    fn square_reach_is_one_at_an_edge_and_root_two_at_a_corner() {
+        //! [`square_reach`]'s own doc states the closed form; this checks
+        //! it against the two points on a square's own boundary a person
+        //! can name without doing trigonometry — an edge's midpoint and a
+        //! corner — and then against the direct definition (the farther
+        //! of `|cos θ|`/`|sin θ|`) at angles that are neither.
+        for deg in [0.0f32, 90.0, 180.0, 270.0] {
+            approx(square_reach(deg.to_radians()), 1.0, 1e-5, &format!("edge midpoint at {deg}°"));
+        }
+        for deg in [45.0f32, 135.0, 225.0, 315.0] {
+            approx(square_reach(deg.to_radians()), std::f32::consts::SQRT_2, 1e-5, &format!("corner at {deg}°"));
+        }
+        for deg in [10.0f32, 62.0, 200.0, 340.0] {
+            let theta = deg.to_radians();
+            let want = 1.0 / theta.cos().abs().max(theta.sin().abs());
+            approx(square_reach(theta), want, 1e-5, &format!("direct definition at {deg}°"));
+        }
+    }
+
+    #[test]
+    fn a_ray_at_square_reach_lands_exactly_on_the_squares_boundary() {
+        //! Not a restatement of the closed form: this checks the GEOMETRIC
+        //! claim [`square_reach`]'s doc makes — that `point_r`'s own
+        //! construction, `centre + radius * rho * (cos θ, sin θ)`, lands
+        //! exactly on the edge of the square whose half-width is `radius`,
+        //! for every angle the outer band actually asks about. If the two
+        //! were out of step the outer band drawn in [`draw`] would either
+        //! leave a gap at the field's own corners or paint past them.
+        for wedges in [6usize, 12, 24, 48] {
+            for w in 0..wedges {
+                let theta = w as f32 * 360.0 / wedges as f32;
+                let reach = square_reach(theta.to_radians());
+                let (dx, dy) = (reach * theta.to_radians().cos(), reach * theta.to_radians().sin());
+                // The point half a unit square's own side (1.0) from the
+                // centre along whichever axis it is closer to end-on.
+                approx(dx.abs().max(dy.abs()), 1.0, 1e-4, &format!("wedges={wedges} w={w}"));
+            }
+        }
+    }
+
+    #[test]
+    fn an_sdr_hdr_ceiling_narrows_the_field_and_gates_the_luminance_part() {
+        //! Section 4's own contract: an SDR layout (`space` with no HDR
+        //! ceiling, or `None` entirely) is BYTE IDENTICAL to the layout
+        //! before this control knew HDR existed — nothing widens or is
+        //! left blank — and the field only narrows, with a
+        //! [`Part::Luminance`] appearing in [`parts`], once
+        //! `GamutSpace::hdr_ceiling_nits` is `Some`.
+        // A band narrow enough that the field's own WIDTH is what limits
+        // its diameter (`box_w < picker.field_h`) rather than its fixed
+        // height — at the full 520 px band the field is height-bound and
+        // reserving the luminance bar's width would not move it at all,
+        // which would make this test true for the wrong reason.
+        let area = Rect::new(30.0, 40.0, 250.0, 0.0);
+        let sdr = layout(area, 2, None);
+        let sdr_with_space = layout(
+            area,
+            2,
+            Some(GamutSpace { primaries: theme::color::Primaries::SRGB, hdr_ceiling_nits: None }),
+        );
+        approx(sdr_with_space.field.w, sdr.field.w, 1e-4, "a space with no HDR ceiling changes nothing");
+        approx(sdr_with_space.value.x, sdr.value.x, 1e-4, "a space with no HDR ceiling changes nothing");
+        assert!(sdr.luminance.is_none(), "no luminance bar without a space at all");
+        assert!(sdr_with_space.luminance.is_none(), "no luminance bar for an SDR space");
+        assert!(
+            !parts(&sdr).iter().any(|(p, _)| *p == Part::Luminance),
+            "no Luminance part without a bar to stand for"
+        );
+
+        let hdr = layout(
+            area,
+            2,
+            Some(GamutSpace { primaries: theme::color::Primaries::BT2020, hdr_ceiling_nits: Some(1000.0) }),
+        );
+        let r = hdr.luminance.expect("an HDR ceiling reserves a luminance bar");
+        assert!(hdr.field.w < sdr.field.w, "the field narrows to make room: {} vs {}", hdr.field.w, sdr.field.w);
+        assert!(
+            r.x >= area.x - 0.01 && r.right() <= area.x + area.w + 0.01,
+            "the luminance bar stays inside the band: {} .. {}",
+            r.x,
+            r.right()
+        );
+        assert!(
+            parts(&hdr).iter().any(|(p, _)| *p == Part::Luminance),
+            "an HDR layout's luminance bar is in the Tab chain"
+        );
+    }
+
+    #[test]
+    fn the_gamut_curve_sits_on_the_wheels_own_rim_for_srgb_and_past_it_for_a_wider_gamut() {
+        //! The curve's own law (module header, "A SQUARE AND NOT A
+        //! CIRCLE"): a spoke's radius is a target gamut's own chroma
+        //! ceiling divided by sRGB's at that spoke's OWN OKLCh lightness
+        //! and hue — 1.0 exactly when the target IS sRGB (the wheel's own
+        //! rim), and past 1.0 for a gamut sRGB does not reach. Checked
+        //! directly against `Color::max_chroma_in`, the same function
+        //! `draw` calls, rather than against a second implementation of
+        //! the ratio.
+        let p = Picker::of(Color::rgb8(0xB0, 0x30, 0x30));
+        let n = (theme::resolved().px(theme::id("picker.hue_stops").expect("declared")).round() as usize).clamp(2, 64);
+        let (wedges, _) = wheel_tessellation(n);
+        for w in 0..wedges {
+            let h = w as f32 * 360.0 / wedges as f32;
+            let (r, g, b) = hsv_to_rgb(h, 1.0, p.hsv[2]);
+            let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
+            let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
+            let want_srgb_radius = c_srgb / c_srgb.max(1e-6);
+            approx(want_srgb_radius, 1.0, 1e-4, &format!("sRGB targeting itself at wedge {w}"));
+            let c_p3 = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::DISPLAY_P3);
+            assert!(c_p3 >= c_srgb - 1e-4, "P3 chroma {c_p3} below sRGB's {c_srgb} at wedge {w}");
+        }
+        // And at least one spoke of a genuinely wide gamut reaches past
+        // the wheel's own rim — the whole reason the field is a square
+        // and not a circle.
+        let widest = (0..wedges)
+            .map(|w| {
+                let h = w as f32 * 360.0 / wedges as f32;
+                let (r, g, b) = hsv_to_rgb(h, 1.0, p.hsv[2]);
+                let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
+                let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
+                let c_bt2020 = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::BT2020);
+                c_bt2020 / c_srgb.max(1e-6)
+            })
+            .fold(0.0f32, f32::max);
+        assert!(widest > 1.05, "no spoke of BT.2020 reached past the wheel's own rim: widest {widest}");
+    }
+
+    #[test]
+    fn a_picker_opens_at_the_sdr_reference_white() {
+        //! [`Picker::of`]/[`Picker::at_rest`] both route through the same
+        //! constructor, so checking one checks both — the luminance bar's
+        //! handle should stand at "ordinary SDR brightness" the moment a
+        //! picker is opened, not at zero or at the ceiling.
+        let p = Picker::of(Color::rgb8(0x80, 0x40, 0x20));
+        approx(p.luminance_at(1000.0), 1.0 - SDR_REFERENCE_NITS / 1000.0, 1e-5, "opens at the reference white");
+    }
+
+    #[test]
+    fn luminance_at_and_pick_luminance_are_inverses() {
+        //! [`Picker::luminance_at`]/[`Picker::pick_luminance`] must agree
+        //! on the same `ceiling_nits` the way [`wheel_point`]/[`wheel_pick`]
+        //! agree on the wheel's own square — a drag to the bar's own top
+        //! or bottom must land exactly there, and a value read back must
+        //! reproduce the fraction it came from.
+        let mut p = Picker::of(Color::WHITE);
+        let ceiling = 1000.0f32;
+        for fy in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            p.pick_luminance(fy, ceiling);
+            approx(p.luminance_at(ceiling), fy, 1e-5, &format!("fy={fy}"));
+        }
+        p.pick_luminance(0.0, ceiling);
+        approx(p.luminance_at(ceiling), 0.0, 1e-6, "the top of the bar is the ceiling");
+        p.pick_luminance(1.0, ceiling);
+        approx(p.luminance_at(ceiling), 1.0, 1e-6, "the bottom of the bar is zero nits");
+    }
+
+    #[test]
+    fn colour_hdr_is_the_ordinary_colour_scaled_by_the_nits_gain() {
+        //! [`Picker::colour_hdr`]'s own doc: `hsv_to_rgb` and `to_linear`
+        //! exactly as [`Picker::colour`] uses them, times one gain factor
+        //! — checked here by DIVIDING it back out and comparing against
+        //! the ordinary linear colour, so a mistake in the gain step
+        //! cannot hide behind a mistake in the decode it shares with
+        //! `colour`.
+        let mut p = Picker::of(Color::rgb8(0x40, 0xA0, 0xC0));
+        let ordinary_linear = p.colour().to_linear();
+        for (nits, ref_nits) in [(203.0f32, 203.0), (406.0, 203.0), (1000.0, 203.0), (100.0, 203.0)] {
+            p.pick_luminance(1.0 - nits / 2000.0, 2000.0); // lands `nits` on the axis
+            let hdr = p.colour_hdr(ref_nits);
+            let gain = nits / ref_nits;
+            approx(hdr.r, ordinary_linear.r * gain, 2e-3, &format!("red at {nits} nits"));
+            approx(hdr.g, ordinary_linear.g * gain, 2e-3, &format!("green at {nits} nits"));
+            approx(hdr.b, ordinary_linear.b * gain, 2e-3, &format!("blue at {nits} nits"));
+            approx(hdr.a, ordinary_linear.a, 1e-6, "alpha is untouched by the gain");
+        }
+        // At the reference white itself the gain is exactly 1: HDR and
+        // ordinary agree, which is the whole point of calibrating against
+        // a reference rather than an arbitrary number.
+        p.pick_luminance(1.0 - SDR_REFERENCE_NITS / 2000.0, 2000.0);
+        let at_reference = p.colour_hdr(SDR_REFERENCE_NITS);
+        approx(at_reference.r, ordinary_linear.r, 1e-3, "gain 1 at the reference white");
     }
 }
