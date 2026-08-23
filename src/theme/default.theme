@@ -3796,6 +3796,39 @@ filetile        = @accent.primary   # a file browser tile · 1 · col · @accent
 table.head      = @accent.primary   # a sortable table heading · 1,9 · col · @accent.primary; the 5.27 matrix has always given this class hover / press / selected (selected = the SORTED column) and ui.rs has always asked for it by name — the row itself was missing, so class_id answered None and every heading fell back to StateStyle::RAW: no wash under the pointer, no press, no mark on the column being sorted by
 script.row      = @accent.primary   # a selectable row a script widget draws · 1 · col · @accent.primary
 
+# =========================================================================
+# 5.21b family — which state ladder a class reads (added 2026-08-23, after
+# an audit found 22 of the 26 classes above sharing @accent.primary AND the
+# one global [state] formula: same colour AND same maths is why a button
+# and a scrollbar thumb amounted to the same object wearing two names).
+#
+# A class named here reads the ladder its word points at ([state.input] or
+# [state.window], both below) instead of the bare [state] ladder. A class
+# NOT named here is unchanged: it still reads [state], which keeps its
+# original role as the button/actionable-control formula rather than
+# becoming a fourth, nameless family. `base` and `window` are the only two
+# legal words; the engine treats anything else as absent (5.6's error
+# policy — degrade, never refuse to start).
+#
+# The split follows Qt's QPalette::Button vs ::Base: `button` classes are
+# things pressed to FIRE an action (a momentary event); `base` classes are
+# surfaces you TYPE INTO, DRAG or TOGGLE (a sustained, checkable state);
+# `window` classes are containers, not controls — 5.21's own comment on
+# `[focus]` already called window/panel/dialog out as a different kind of
+# thing from the rest of this list.
+# =========================================================================
+[family]
+window          = window   # the frame around a foreign window
+panel           = window   # a bordered panel as a container
+dialog          = window   # the resolution dialog
+field           = input    # the search box and the SAVE AS name field
+checkbox        = input    # the SNAP TO GRID box
+slider.track    = input    # a slider's groove ring
+slider.knob     = input    # a slider's handle
+scrollbar.thumb = input    # the scroll thumb
+resize.grip     = input    # the corner resize grip
+list.item       = input    # a task, notification or process row, and the row of an open drop-down — Qt's own Base role covers exactly this (list/tree rows), not Button
+
 [state]
 
 # ---- idle · every class must define it; the resting look -----------------
@@ -3876,6 +3909,166 @@ disabled.edge_width  = @stroke.hair        # thinnest ring; settings; device px;
 disabled.glow_radius = 0u                  # a disabled control never glows; -; u, 0u .. 6u; -
 disabled.glow_alpha  = 0.00                # a disabled control never glows; -; 0..1; -
 disabled.elevation   = 0                   # a disabled control never lifts; -; n, 0 .. 8; -
+
+# =========================================================================
+# 5.21c [state.input] — the ladder for surfaces you type into, drag or
+# toggle (5.21b): field, checkbox, a slider's track and knob, the
+# scrollbar thumb, the resize grip, a list/task row. The shape of this
+# ladder is identical to [state]'s (seven states, eight channels, `base`
+# bound to the class's own colour) — only the numbers differ, and they
+# differ on purpose: an input surface has to be FOUND at rest (idle reads
+# stronger than a button's, which is allowed to all but disappear until
+# touched), and its persistent state has to read unmistakably once it is
+# ON (selected jumps hard, because "checked" and "not checked" is the one
+# distinction this family exists to make loud). Hover is deliberately
+# quieter than a button's: pointing at a checkbox is not "about to fire".
+#
+# UNMEASURED, same as [state] originally was before Pass D's arithmetic
+# lint: reasoned from the family's job, not from a screen. A theme is free
+# to override every cell exactly as it already could for [state].
+# =========================================================================
+[state.input]
+
+idle.fill            = alpha(base, 0.10)   # a resting surface must read as a surface, not wait to be touched; 0..1
+idle.edge            = alpha(base, 0.55)   # a checkbox/field boundary has to be findable at rest; 0..1; stronger than button's 0.40
+idle.text            = alpha(base, 0.70)   # resting label text; 0..1; unchanged from the button ladder's floor
+idle.glyph           = alpha(base, 0.70)   # resting icon/glyph strokes; 0..1; tracks idle.text
+idle.edge_width      = @stroke.hair        # resting ring width; device px via stroke()
+idle.glow_radius     = 0u                  # no glow at rest; u, 0u .. 6u
+idle.glow_alpha      = 0.00                # no glow at rest; 0..1
+idle.elevation       = 0                   # material rank at rest; n, 0 .. 8
+
+hover.fill           = alpha(base, 0.14)   # pointer inside the hit rect; 0..1; quieter than button's 0.22 - proximity, not "about to fire"
+hover.edge           = alpha(base, 0.70)   # ring brightens under the pointer; 0..1
+hover.text           = base                # label goes to full base under the pointer; colour
+hover.glyph          = base                # glyph goes to full base under the pointer; colour
+hover.edge_width     = @stroke.hair        # width does NOT change on hover; device px
+hover.glow_radius    = 0.8u                # soft halo under the pointer; u, 0u .. 6u; smaller than button's 1.2u
+hover.glow_alpha     = 0.20                # hover halo strength; 0..1
+hover.elevation      = 0                   # hover does not lift the material; n, 0 .. 8
+
+press.fill           = alpha(base, 0.30)   # held interior, e.g. a slider knob mid-grab; 0..1
+press.edge           = alpha(base, 0.85)   # held ring; 0..1
+press.text           = base                # held label; colour
+press.glyph          = base                # held glyph; colour
+press.edge_width     = @stroke.hair        # width does NOT change on press; device px
+press.glow_radius    = 1.0u                # press halo; u, 0u .. 6u
+press.glow_alpha     = 0.35                # press halo strength; 0..1
+press.elevation      = 0                   # press does not lift the material; n, 0 .. 8
+
+selected.fill        = alpha(base, 0.55)   # the ON state, and this family's reason to exist: checked/selected must be unmistakable, not merely "lighter"; 0..1
+selected.edge        = base                # the checked ring goes fully solid, not a fraction of base; colour
+selected.text        = base                # the checked label goes solid; colour
+selected.glyph       = base                # the checked glyph (e.g. the tick) goes solid; colour
+selected.edge_width  = @stroke.thin        # selection thickens the ring one step; device px
+selected.glow_radius = 0.6u                # steady selection halo; u, 0u .. 6u
+selected.glow_alpha  = 0.18                # steady selection halo strength; 0..1
+selected.elevation   = 0                   # selection does not lift the material; n, 0 .. 8
+
+selected_hover.fill        = alpha(base, 0.62)  # checked AND pointed at; 0..1
+selected_hover.edge        = base               # ring stays solid; colour
+selected_hover.text        = base               # label stays solid; colour
+selected_hover.glyph       = base               # glyph stays solid; colour
+selected_hover.edge_width  = @stroke.thin       # keeps the selection's thicker ring; device px
+selected_hover.glow_radius = 0.9u               # between selected 0.6u and press 1.0u; u, 0u .. 6u
+selected_hover.glow_alpha  = 0.28               # between selected 0.18 and press 0.35; 0..1
+selected_hover.elevation   = 0                  # no lift; n, 0 .. 8
+
+dragging.fill        = alpha(base, 0.35)   # a grabbed slider knob's interior; 0..1; the thumb's position is the signal, not the fill
+dragging.edge        = alpha(base, 0.90)   # grabbed item's ring; 0..1
+dragging.text        = base                # grabbed item's label; colour
+dragging.glyph       = base                # grabbed item's glyph; colour
+dragging.edge_width  = @stroke.thin        # a dragged edge reads one step heavier; device px
+dragging.glow_radius = 1.6u                # widest halo in this ladder; u, 0u .. 6u
+dragging.glow_alpha  = 0.35                # lifted-object halo strength; 0..1
+dragging.elevation   = 1                   # a dragged knob or thumb rises one rank; n, 0 .. 8; quieter than button family's 2 - it is a small control, not a whole tile
+
+disabled.fill        = alpha(base, 0.03)   # a ghost of the resting interior; 0..1; below idle by rule (Pass D)
+disabled.edge        = alpha(base, 0.22)   # a ghost of the ring; 0..1; below idle 0.55 by rule
+disabled.text        = alpha(base, 0.28)   # inert label; 0..1
+disabled.glyph       = alpha(base, 0.28)   # inert glyph; 0..1; tracks disabled.text
+disabled.edge_width  = @stroke.hair        # thinnest ring; device px
+disabled.glow_radius = 0u                  # a disabled control never glows; u, 0u .. 6u
+disabled.glow_alpha  = 0.00                # a disabled control never glows; 0..1
+disabled.elevation   = 0                   # a disabled control never lifts; n, 0 .. 8
+
+# =========================================================================
+# 5.21d [state.window] — the ladder for containers: window, panel, dialog
+# (5.21b). These are not controls in the sense the rest of §5.21 assumes -
+# 5.21's own note below says as much for focus, which this family also
+# uses. Hover and press are correspondingly close to silent (a container's
+# body is a backdrop, not a target); dragging is the one state that
+# genuinely happens to a window, so it is the one state this ladder lifts
+# at all, and only one rank - a whole window rising two full ranks like a
+# pressed button would read as an animation error, not a container being
+# picked up.
+#
+# UNMEASURED, same caveat as [state.input].
+# =========================================================================
+[state.window]
+
+idle.fill            = alpha(base, 0.04)   # the panel/window body is a backdrop, not a target; 0..1; quieter than button's 0.07
+idle.edge            = alpha(base, 0.35)   # close to button's 0.40 on purpose - the glowing panel edge is family A's signature look and this ladder must not dim it
+idle.text            = alpha(base, 0.70)   # resting label text; 0..1
+idle.glyph           = alpha(base, 0.70)   # resting icon/glyph strokes; 0..1
+idle.edge_width      = @stroke.hair        # resting ring width; device px
+idle.glow_radius     = 0u                  # no glow at rest; u, 0u .. 6u
+idle.glow_alpha      = 0.00                # no glow at rest; 0..1
+idle.elevation       = 0                   # material rank at rest; n, 0 .. 8
+
+hover.fill           = alpha(base, 0.05)   # hovering a container's body is not a signal; barely moves off idle; 0..1
+hover.edge           = alpha(base, 0.40)   # ring brightens slightly; 0..1
+hover.text           = base                # colour
+hover.glyph          = base                # colour
+hover.edge_width     = @stroke.hair        # device px
+hover.glow_radius    = 0u                  # containers do not halo on hover - that reads as a control, not a frame; u, 0u .. 6u
+hover.glow_alpha     = 0.00                # 0..1
+hover.elevation      = 0                   # n, 0 .. 8
+
+press.fill           = alpha(base, 0.06)   # a titlebar press just before a drag starts; minimal; 0..1
+press.edge           = alpha(base, 0.45)   # 0..1
+press.text           = base                # colour
+press.glyph          = base                # colour
+press.edge_width     = @stroke.hair        # device px
+press.glow_radius    = 0u                  # u, 0u .. 6u
+press.glow_alpha     = 0.00                # 0..1
+press.elevation      = 0                   # n, 0 .. 8
+
+selected.fill        = alpha(base, 0.06)   # rarely reached - kept close to idle so a stray query never answers something loud; 0..1
+selected.edge        = alpha(base, 0.45)   # 0..1
+selected.text        = base                # colour
+selected.glyph       = base                # colour
+selected.edge_width  = @stroke.hair        # device px
+selected.glow_radius = 0u                  # u, 0u .. 6u
+selected.glow_alpha  = 0.00                # 0..1
+selected.elevation   = 0                   # n, 0 .. 8
+
+selected_hover.fill        = alpha(base, 0.07)  # 0..1
+selected_hover.edge        = alpha(base, 0.50)  # 0..1
+selected_hover.text        = base               # colour
+selected_hover.glyph       = base               # colour
+selected_hover.edge_width  = @stroke.hair       # device px
+selected_hover.glow_radius = 0u                 # u, 0u .. 6u
+selected_hover.glow_alpha  = 0.00               # 0..1
+selected_hover.elevation   = 0                  # n, 0 .. 8
+
+dragging.fill        = alpha(base, 0.08)   # a window being moved - a subtle lift, not a flashy control-drag; 0..1
+dragging.edge        = base                # the edge goes solid while being repositioned - "I am the one moving"; colour
+dragging.text        = base                # colour
+dragging.glyph       = base                # colour
+dragging.edge_width  = @stroke.thin        # device px
+dragging.glow_radius = 1.0u                # u, 0u .. 6u
+dragging.glow_alpha  = 0.20                # 0..1
+dragging.elevation   = 1                   # one rank while being dragged; n, 0 .. 8; quieter than button family's 2 - a whole window lifting two ranks would read as broken, not held
+
+disabled.fill        = alpha(base, 0.00)   # no interior; 0..1
+disabled.edge        = alpha(base, 0.15)   # a ghost of the ring; 0..1
+disabled.text        = alpha(base, 0.25)   # inert label; 0..1
+disabled.glyph       = alpha(base, 0.25)   # inert glyph; 0..1
+disabled.edge_width  = @stroke.hair        # device px
+disabled.glow_radius = 0u                  # u, 0u .. 6u
+disabled.glow_alpha  = 0.00                # 0..1
+disabled.elevation   = 0                   # n, 0 .. 8
 
 # =========================================================================
 # 5.21  focus.* — orthogonal to the state ladder (6)

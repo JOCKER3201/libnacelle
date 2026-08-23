@@ -579,18 +579,26 @@ pub fn bake(
 
     // The class x state matrix, from the raw values the resolver produced
     // with `base` bound per class. Channel mapping is by NAME within the
-    // ladder — "state.<state>.<channel>" — so the matrix survives the master
-    // reordering its [state] section.
+    // ladder a class was assigned to — "state.<state>.<channel>" for the
+    // bare (family 0 / "button") ladder, "state.<family>.<state>.<channel>"
+    // for a named one — so the matrix survives the master reordering any
+    // [state*] section. Each class's row was evaluated against exactly one
+    // ladder (`r.class_family[ci]` says which), never against all three.
     let mut class_states =
         vec![StateStyle::RAW; r.class_ids.len() * super::parse::STATE_NAMES.len()];
     {
-        let chan = |state: &str, c: &str| {
-            let want = format!("state.{state}.{c}");
-            r.state_ids
-                .iter()
-                .position(|&id| schema.name(id) == want)
-        };
         for (ci, row) in r.class_states.iter().enumerate() {
+            let fam = r.class_family[ci];
+            let ladder = &r.state_ladders[fam as usize];
+            let prefix = match fam {
+                1 => "state.input.",
+                2 => "state.window.",
+                _ => "state.",
+            };
+            let chan = |state: &str, c: &str| {
+                let want = format!("{prefix}{state}.{c}");
+                ladder.iter().position(|&id| schema.name(id) == want)
+            };
             for (si, state) in super::parse::STATE_NAMES.iter().enumerate() {
                 let mut st = StateStyle::RAW;
                 let col = |c: &str| -> Option<Color> {
@@ -603,7 +611,7 @@ pub fn bake(
                     chan(state, c).and_then(|p| row.get(p)).and_then(|v| match v {
                         Value::Num(x) => Some(*x),
                         Value::Len(x, u) => {
-                            Some(length_px(&format!("state.{state}.{c}"), *x, *u, &m))
+                            Some(length_px(&format!("{prefix}{state}.{c}"), *x, *u, &m))
                         }
                         _ => None,
                     })

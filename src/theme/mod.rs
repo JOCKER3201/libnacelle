@@ -2129,6 +2129,53 @@ mod tests {
         assert!(bp.fill.a > bi.fill.a, "press ({}) not above idle ({})", bp.fill.a, bi.fill.a);
     }
 
+    /// §5.21b's reason to exist: `button` and `checkbox` share the exact
+    /// same base colour (`@accent.primary`), so any difference between
+    /// their baked state styles can only come from the FORMULA — proof
+    /// that `[family]` actually routes a class to a different ladder,
+    /// isolated from the confound the button-vs-panel test above accepts
+    /// (those two also differ in base colour).
+    #[test]
+    fn a_class_named_in_family_bakes_against_its_own_ladder_not_state() {
+        let mut out = Vec::new();
+        let mut src = Sources::new();
+        let f = src.add("default.theme", DEFAULT_THEME);
+        let doc = parse::parse(&mut src, f, None, &mut out);
+        let mut schema = Schema::from_default(&doc, &mut out);
+        let rr = resolve::resolve_default(&schema, &mut out);
+        schema.adopt_kinds(&rr.values);
+        let r = resolve::resolve(&schema, &schema.base_spec(), &mut out);
+        let t = bake::bake(&schema, &r, &BakeInput::default(), &mut out);
+
+        let button = r.class_ids.iter().position(|&id| schema.name(id) == "class.button").unwrap();
+        let checkbox = r.class_ids.iter().position(|&id| schema.name(id) == "class.checkbox").unwrap();
+        let window = r.class_ids.iter().position(|&id| schema.name(id) == "class.window").unwrap();
+
+        assert_eq!(r.class_family[button], 0, "button must stay on the bare [state] ladder");
+        assert_eq!(r.class_family[checkbox], 1, "checkbox must read [family] and land on ladder 1 (input)");
+        assert_eq!(r.class_family[window], 2, "window must read [family] and land on ladder 2 (window)");
+
+        let button_base = r.values[r.class_ids[button].index()].as_color();
+        let checkbox_base = r.values[r.class_ids[checkbox].index()].as_color();
+        assert_eq!(button_base, checkbox_base, "the test's premise: button and checkbox must share one base colour");
+
+        let b_sel = t.class_state(button as u16, parse::State::Selected);
+        let c_sel = t.class_state(checkbox as u16, parse::State::Selected);
+        // [state] selected.fill = alpha(base, 0.14); [state.input] selected.fill
+        // = alpha(base, 0.55) — a same-base pair four times apart in alpha is
+        // not measurement noise, it is two different formulas.
+        assert!(
+            c_sel.fill.a > b_sel.fill.a * 2.0,
+            "checkbox selected ({}) is not meaningfully louder than button selected ({}) despite an identical base colour — the family split is not taking effect",
+            c_sel.fill.a, b_sel.fill.a
+        );
+
+        // window's own ladder: dragging lifts exactly one rank, never two —
+        // §5.21d's point that a container is not a pressed button.
+        let w_drag = t.class_state(window as u16, parse::State::Dragging);
+        assert_eq!(w_drag.elevation, 1.0, "window dragging must lift exactly one rank, not the button ladder's two");
+    }
+
     /// The governing principle's own acceptance test: a [meta]-only master
     /// still parses, resolves and bakes — into an EMPTY table, whose every
     /// lookup answers the per-kind raw default. The program with no design

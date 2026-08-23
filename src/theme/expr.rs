@@ -344,6 +344,16 @@ impl Value {
         }
     }
 
+    /// The bare word of an enum-typed value (`family = base` reads as
+    /// `Some("base")`), for a caller matching against a small fixed set of
+    /// names rather than wanting a colour or a number.
+    pub fn as_word(&self) -> Option<&str> {
+        match self {
+            Value::Word(w) => Some(w.as_str()),
+            _ => None,
+        }
+    }
+
     /// The scalar reading of a value, for a function argument that wants a
     /// number. `%` reads as its fraction so `55%` and `0.55` are the same
     /// argument (§3.2).

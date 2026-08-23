@@ -40,11 +40,21 @@ pub struct Resolved {
     pub deferred: usize,
     /// The `class.*` tokens, in declaration order — the classes of §5.27.
     pub class_ids: Vec<TokenId>,
-    /// The `[state]` ladder tokens the class pass evaluated, in a fixed order.
-    pub state_ids: Vec<TokenId>,
-    /// `class_states[class][i]` = the value of `state_ids[i]` with `base`
-    /// bound to `class_ids[class]`'s own colour. Raw values — bake turns them
-    /// into [`super::bake::StateStyle`]s.
+    /// `class_ids[i]`'s state-ladder family: 0 = the bare `[state]` ladder
+    /// (every class not named in `[family]`, "button" in spirit), 1 =
+    /// `[state.input]`, 2 = `[state.window]`. A theme file names families by
+    /// word (`field = base`, `window = window` under `[family]`), not by
+    /// number — this array is where that word becomes an index.
+    pub class_family: Vec<u8>,
+    /// The three ladders a class can be assigned to, indexed by
+    /// `class_family`'s 0/1/2: the bare `state.<state>.<channel>` tokens,
+    /// then `state.input.*` and `state.window.*`. Each class's row in
+    /// `class_states` was evaluated against exactly one of these three.
+    pub state_ladders: [Vec<TokenId>; 3],
+    /// `class_states[class][i]` = the value of
+    /// `state_ladders[class_family[class]][i]` with `base` bound to
+    /// `class_ids[class]`'s own colour. Raw values — bake turns them into
+    /// [`super::bake::StateStyle`]s.
     pub class_states: Vec<Vec<Value>>,
 }
 
@@ -86,26 +96,87 @@ pub fn resolve(schema: &Schema, spec: &ThemeSpec, out: &mut Vec<Diagnostic>) -> 
     out.append(&mut r.diags);
 
     // The class x state pass (§5.21 x §5.27). Classes are the `class.*`
-    // colour tokens in declaration order; the ladder is every `state.*`
-    // token. Both lists come straight from the schema, so a master with no
-    // `[class]` block simply produces an empty matrix and every control
-    // draws RAW — which is the governing principle working, not an error.
+    // colour tokens in declaration order. The ladder used to be one global
+    // `state.*` list; it is now up to three, because a container (window,
+    // panel, dialog) and an input surface (field, checkbox, a slider's
+    // track and knob...) do not press or select the way a button does, and
+    // dressing all 26 classes in one formula was the whole reason 22 of
+    // them read as the same object with a different name. A bare
+    // `state.<state>.<channel>` token belongs to ladder 0 (the ladder every
+    // class had before this split, and still the default for a class
+    // `[family]` says nothing about); `state.input.*` and `state.window.*`
+    // are the two named ladders `[family]` can point a class at. All three
+    // lists come straight from the schema, so a master with no `[class]`
+    // block simply produces empty matrices and every control draws RAW —
+    // the governing principle working, not an error.
     let mut class_ids = Vec::new();
-    let mut state_ids = Vec::new();
+    let mut state_ladders: [Vec<TokenId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut family_ids = Vec::new();
     for i in 0..n {
         let id = TokenId(i as u16);
         let name = schema.name(id);
         if name.starts_with("class.") {
             class_ids.push(id);
-        } else if name.starts_with("state.") {
-            state_ids.push(id);
+        } else if let Some(rest) = name.strip_prefix("state.") {
+            let first = rest.split('.').next().unwrap_or("");
+            if super::parse::State::from_name(first).is_some() {
+                state_ladders[0].push(id);
+            } else if first == "input" {
+                state_ladders[1].push(id);
+            } else if first == "window" {
+                state_ladders[2].push(id);
+            }
+            // An unrecognised word after "state." names no ladder this
+            // engine knows: the token still exists (cascade.rs already
+            // warned if nothing declared it), it just never enters a
+            // class x state pass.
+        } else if name.starts_with("family.") {
+            family_ids.push(id);
         }
     }
     let bases: Vec<Color> = class_ids
         .iter()
         .map(|&id| values[id.index()].as_color().unwrap_or(Color::GREY))
         .collect();
-    let class_states = resolve_states(schema, spec, &bases, &state_ids, out);
+
+    // `[family]` names a class by the same dotted key `[class]` uses
+    // (`slider.track = input`), so the lookup strips "class." off the
+    // class token's own name and asks the schema for "family.<that>".
+    // A class `[family]` says nothing about keeps ladder 0 - the bare
+    // `[state]` ladder is the one every class read before this split, so
+    // silence means "unchanged", not "undefined". The family word is NOT
+    // "base": `base` is already the state ladder's own keyword for "this
+    // class's own colour" (`resolve_states`' `state_base`), and reusing it
+    // here would make `field = base` try to evaluate that binding instead
+    // of naming a family - hence "input" for the ladder Qt calls Base.
+    let class_family: Vec<u8> = class_ids
+        .iter()
+        .map(|&cid| {
+            let class_name = schema.name(cid).strip_prefix("class.").unwrap_or("");
+            let want = format!("family.{class_name}");
+            family_ids
+                .iter()
+                .find(|&&fid| schema.name(fid) == want)
+                .and_then(|&fid| values[fid.index()].as_word())
+                .map(|w| match w {
+                    "input" => 1u8,
+                    "window" => 2u8,
+                    _ => 0u8,
+                })
+                .unwrap_or(0u8)
+        })
+        .collect();
+
+    let rows_per_ladder: [Vec<Vec<Value>>; 3] = [
+        resolve_states(schema, spec, &bases, &state_ladders[0], out),
+        resolve_states(schema, spec, &bases, &state_ladders[1], out),
+        resolve_states(schema, spec, &bases, &state_ladders[2], out),
+    ];
+    let class_states: Vec<Vec<Value>> = class_family
+        .iter()
+        .enumerate()
+        .map(|(ci, &fam)| rows_per_ladder[fam as usize][ci].clone())
+        .collect();
 
     Resolved {
         label: spec.label.clone(),
@@ -113,7 +184,8 @@ pub fn resolve(schema: &Schema, spec: &ThemeSpec, out: &mut Vec<Diagnostic>) -> 
         wash,
         deferred,
         class_ids,
-        state_ids,
+        class_family,
+        state_ladders,
         class_states,
     }
 }
