@@ -151,12 +151,17 @@ pub enum MenuItem {
     Close,
 }
 
-const MENU: [(MenuItem, &str); 5] = [
-    (MenuItem::Move, "MOVE"),
-    (MenuItem::Resize, "RESIZE"),
-    (MenuItem::Minimize, "MINIMIZE"),
-    (MenuItem::Maximize, "MAXIMIZE"),
-    (MenuItem::Close, "CLOSE"),
+/// The five rows, each carrying the `catalog.winframe.*` key its label is
+/// read through (5.30) and the literal that key's row drew before the
+/// catalogue existed — the fallback [`ui::theme_catalog_named`] hands back
+/// if a theme declares the key absent, and what every stock build still
+/// draws today, byte for byte.
+const MENU: [(MenuItem, &str, &str); 5] = [
+    (MenuItem::Move, "catalog.winframe.move", "MOVE"),
+    (MenuItem::Resize, "catalog.winframe.resize", "RESIZE"),
+    (MenuItem::Minimize, "catalog.winframe.minimize", "MINIMIZE"),
+    (MenuItem::Maximize, "catalog.winframe.maximize", "MAXIMIZE"),
+    (MenuItem::Close, "catalog.winframe.close", "CLOSE"),
 ];
 
 /// What a point in a frame means. The resize signs follow the screen:
@@ -380,7 +385,7 @@ impl Frame {
         if self.open {
             let mr = menu_rect(outer, m);
             if mr.contains(x, y) {
-                for (i, (item, _)) in MENU.iter().enumerate() {
+                for (i, (item, _, _)) in MENU.iter().enumerate() {
                     if menu_row(mr, i).contains(x, y) {
                         return Part::MenuEntry(*item);
                     }
@@ -765,7 +770,7 @@ impl Frame {
         let iface = role.font();
         let ifig = role.figures(ctx.fonts, iface, ipx);
         let inset = t.px(tok(&ITEM_INSET, "menu.item_inset")).max(0.0);
-        for (i, (_, label)) in MENU.iter().enumerate() {
+        for (i, (_, key, fallback)) in MENU.iter().enumerate() {
             let row = menu_row(mr, i);
             let hot = ctx.mouse.over(row);
             let st = class_fade(
@@ -780,13 +785,17 @@ impl Frame {
             if st.fill.a > 0.0 {
                 ctx.dl.rect(row.x, row.y, row.w, row.h, col(st.fill));
             }
+            // Epoch-gated (5.30): a per-key cache, not a scan of
+            // `ThemeDiagnostics.catalog` on a path drawn every frame the
+            // menu is open. See `ui::theme_catalog_named`.
+            let label = ui::theme_catalog_named(key, fallback);
             ctx.dl.text_fig(
                 ctx.fonts,
                 iface,
                 ipx,
                 row.x + inset,
                 row.y + (row.h - ipx * leading) / 2.0,
-                label,
+                &label,
                 col(st.text),
                 spacing,
                 &ifig,
@@ -1105,6 +1114,14 @@ mod tests {
             all.iter().filter(|(_, s)| s != "NACELLE").cloned().collect();
         assert_eq!(rows.len(), MENU.len(), "every menu row draws its label: {all:?}");
         all_in(&rows, want);
+        // Regression guard (5.30): the shipped master's own untagged
+        // `catalog.winframe.*` rows are byte-identical to what this file
+        // drew before the catalogue existed — a stock build with no theme
+        // change owes nobody a diff. Checked in draw order, which is
+        // `MENU`'s own declaration order (Move, Resize, Minimize,
+        // Maximize, Close).
+        let words: Vec<&str> = rows.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(words, ["MOVE", "RESIZE", "MINIMIZE", "MAXIMIZE", "CLOSE"], "{all:?}");
         println!("title slot {title_face}");
         report(&role_word("menu.item.role"), want, &rows);
     }

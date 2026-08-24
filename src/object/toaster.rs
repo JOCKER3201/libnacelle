@@ -84,8 +84,18 @@ impl Toast {
 
     /// The warning the desktop has always shown: the word WARNING over
     /// the message, in `component.toast.title`.
+    ///
+    /// The title reads `catalog.toaster.warning_title` (5.30) through the
+    /// epoch-gated cache — `"WARNING"` as the fallback a theme that omits
+    /// the key still draws — rather than `theme::diagnostics()` directly:
+    /// this constructor is application code's own call, not a draw call,
+    /// so a caller re-raising one repeating condition can run it every
+    /// frame (`Toaster::push`'s own doc names exactly that caller), and an
+    /// Arc clone plus a `Vec` scan on every one of those pushes is the
+    /// per-frame cost 5.30 was written to avoid.
     pub fn warning(body: String) -> Toast {
-        Toast { severity: None, title: "WARNING".to_string(), body, born: f64::NAN, dwell_ms: None }
+        let title = ui::theme_catalog_named("catalog.toaster.warning_title", "WARNING").to_string();
+        Toast { severity: None, title, body, born: f64::NAN, dwell_ms: None }
     }
 
     pub fn with_severity(mut self, s: Sev) -> Toast {
@@ -514,6 +524,14 @@ mod tests {
             DrawCmd::Text { font, tabular, text, .. } => (*font, *tabular, text.clone()),
             _ => unreachable!("drawn_runs answers text commands"),
         };
+        if run == 0 {
+            // Regression guard (5.30): `Toast::warning`'s title reads
+            // `catalog.toaster.warning_title` through the epoch-gated
+            // cache now, and the shipped master's own untagged row must
+            // still be byte-identical to the literal this file drew
+            // before the catalogue existed.
+            assert_eq!(text, "WARNING", "the shipped master's own untagged catalog row");
+        }
         let drawn = [(font, text)];
         let role = role_word(binding);
         all_in(&drawn, crate::ui::role(&role).font());

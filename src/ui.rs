@@ -645,6 +645,46 @@ pub(crate) fn seed_theme_text(name: &str, v: &str) {
     TEXTS.with(|c| c.borrow_mut().insert(name.to_string(), (epoch, v.into())));
 }
 
+thread_local! {
+    static CATALOG: RefCell<HashMap<String, (u32, Rc<str>)>> = RefCell::new(HashMap::new());
+}
+
+/// A `catalog.<widget>.<name>` string (5.30's widget-text catalogue),
+/// memoised per theme epoch — the same discipline [`theme_text_named`]
+/// keeps for `type.ellipsis` and friends, generalised to a locale-aware
+/// lookup. [`theme::ThemeDiagnostics::catalog_text`]'s own answer is a
+/// walk of `ThemeDiagnostics.catalog` and then `.texts`: fine once at
+/// load, wrong on a path that repaints every frame it is on screen —
+/// `object::winframe`'s window-menu rows and `object::toaster::Toast::
+/// warning`'s title are exactly that path, which is why this exists
+/// rather than both reaching `theme::diagnostics()` themselves.
+///
+/// `theme::resolved()` is forced first rather than assumed, unlike
+/// `theme_text_named`'s callers: those only ever run from inside a draw
+/// that already holds a resolved theme, but a `Toast::warning` can be
+/// constructed by application logic before the first frame, and an
+/// unresolved theme's `diagnostics()` is the DEFAULT empty one, not the
+/// master — silently wrong forever rather than merely cold once.
+///
+/// The cache is keyed on `key` alone, not on `(key, fallback)`: two call
+/// sites sharing one key must agree on `fallback`, exactly as two call
+/// sites sharing one `theme_text_named` name already have to agree on
+/// what absence means.
+pub(crate) fn theme_catalog_named(key: &str, fallback: &'static str) -> Rc<str> {
+    let _ = theme::resolved();
+    let epoch = theme::epoch();
+    CATALOG.with(|c| {
+        if let Some((e, v)) = c.borrow().get(key) {
+            if *e == epoch {
+                return v.clone();
+            }
+        }
+        let v: Rc<str> = theme::diagnostics().catalog_text(key, fallback).into();
+        c.borrow_mut().insert(key.to_string(), (epoch, v.clone()));
+        v
+    })
+}
+
 /// The figure box for a run at `px` in `font`, or [`Figures::NONE`] when
 /// the role does not ask for one.
 ///
@@ -2629,5 +2669,61 @@ mod tests {
         assert_eq!(ghost.px, 0.0);
         assert_eq!(ghost.leading, 0.0);
         assert_eq!(ghost.color.a, 0.0);
+    }
+
+    // -------------------------------------------------- theme_catalog_named
+
+    /// [`theme_catalog_named`]'s cache invalidates on a real reload rather
+    /// than sticking to whatever the first frame saw — the epoch gate 5.30's
+    /// performance requirement asks for, proved against an ACTUAL swap of
+    /// the process-wide theme rather than [`seed_theme_text`]'s stub, which
+    /// only proves a reader reads the cache, not that the cache itself
+    /// tracks the theme.
+    ///
+    /// A process of its own, like every test in this library that swaps the
+    /// PROCESS-WIDE theme (`object::panel::tests::measure_in_child`'s own
+    /// header explains why: `cargo test` runs one binary's tests in
+    /// parallel threads, and a published theme is not a thread-local). This
+    /// one swaps it TWICE inside that one child — the "mid-test reload"
+    /// itself, and the reason it cannot be two separate child runs: two
+    /// fresh processes each starting cold would prove only that two loads
+    /// answer differently, not that ONE cache caught the second one.
+    #[test]
+    fn the_catalog_cache_invalidates_on_a_theme_reload() {
+        let exe = std::env::current_exe().expect("the test binary must be locatable");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["--exact", "ui::tests::epoch_cache_child", "--ignored", "--test-threads=1"]);
+        cmd.env_remove("NACELLE_THEME_PATH");
+        cmd.env_remove("NACELLE_THEME_NAME");
+        cmd.env_remove("NACELLE_THEME_MASTER");
+        let out = cmd.output().expect("the child process must start");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "epoch_cache_child failed:\n{log}");
+    }
+
+    #[test]
+    #[ignore = "run in a process of its own by the test above"]
+    fn epoch_cache_child() {
+        let before = theme_catalog_named("catalog.winframe.move", "MOVE");
+        assert_eq!(&*before, "MOVE", "the shipped master's own untagged catalog row");
+
+        let path = std::env::temp_dir()
+            .join(format!("nacelle-catalog-reload-{}.theme", std::process::id()));
+        std::fs::write(
+            &path,
+            "[meta]\nschema = 1\nname = \"reload\"\nbase = \"default\"\n\n\
+             [catalog]\nwinframe.move = \"MOVED\"\n",
+        )
+        .expect("the fixture theme must be writable");
+
+        theme::load_with(theme::LoadRequest { path: Some(path.clone()), ..Default::default() });
+        let _ = std::fs::remove_file(&path);
+
+        let after = theme_catalog_named("catalog.winframe.move", "MOVE");
+        assert_eq!(&*after, "MOVED", "a reload must invalidate the epoch-gated cache");
     }
 }

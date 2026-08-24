@@ -149,6 +149,20 @@ pub struct ThemeDiagnostics {
     /// The moods and variants this theme resolved into, in selection order.
     /// Index 0 is always the plain theme.
     pub siblings: Vec<String>,
+    /// `[meta] locale` (5.30): which `catalog.*[lang]` sibling widget-drawn
+    /// UI text reads. Empty is the untagged/English row — [`meta.name`]'s
+    /// own empty-string convention, not a special case of it. THE THEME
+    /// DECIDES, not a locale guess (`num.rs`'s `decimal_sep`): nothing reads
+    /// `$LANG` to fill this in, a theme author writes it or leaves it "".
+    pub locale: String,
+    /// Every `catalog.<widget>.<name>[lang]` line the master declares
+    /// (5.30), in [`Schema::localised`]'s own 3-tuple shape — `(base key,
+    /// lang, text)`. Off every draw path by construction, same as
+    /// `texts` above: a widget reaches these through
+    /// [`catalog_text`](ThemeDiagnostics::catalog_text), which a `static`
+    /// per-key cache gates on [`epoch`] rather than scanning this per frame
+    /// (see `crate::ui::theme_catalog_named`).
+    pub catalog: Vec<(String, LangTag, String)>,
 }
 
 impl ThemeDiagnostics {
@@ -165,6 +179,31 @@ impl ThemeDiagnostics {
 
     pub fn text(&self, token: &str) -> Option<&str> {
         self.texts.iter().find(|(k, _)| k == token).map(|(_, v)| v.as_str())
+    }
+
+    /// The active locale — see [`ThemeDiagnostics::locale`] the field.
+    pub fn locale(&self) -> &str {
+        &self.locale
+    }
+
+    /// A widget-drawn UI string (5.30): the exact-locale sibling of `key`
+    /// under the active [`locale`](ThemeDiagnostics::locale), falling back
+    /// to `key`'s untagged base text (through [`text`](ThemeDiagnostics::text),
+    /// the same base a bare `type.ellipsis` reads) and then to `fallback` —
+    /// the caller's own literal, mirroring [`localised_name`]'s
+    /// exact-lang -> untagged -> literal chain. `fallback` should never
+    /// actually fire against the shipped master once 5.30 declares every
+    /// key a caller asks for; it exists so an incomplete third-party theme
+    /// draws English rather than a blank label.
+    ///
+    /// [`localised_name`]: ThemeDiagnostics::localised_name
+    pub fn catalog_text(&self, key: &str, fallback: &'static str) -> &str {
+        self.catalog
+            .iter()
+            .find(|(k, l, _)| k == key && l == &self.locale)
+            .map(|(_, _, v)| v.as_str())
+            .or_else(|| self.text(key))
+            .unwrap_or(fallback)
     }
 }
 
@@ -1836,6 +1875,9 @@ fn collect_meta(
         if let Some(v) = doc.meta_text("meta.family") {
             meta.family = v;
         }
+        if let Some(v) = doc.meta_text("meta.locale") {
+            meta.locale = v;
+        }
         if let Some(Expr::Num(v)) = doc.meta(&"meta.schema".to_string()) {
             meta.schema = *v as u32;
         }
@@ -1844,6 +1886,15 @@ fn collect_meta(
             match kv.key.as_str() {
                 "meta.name" => meta.name.push((lang.clone(), t.clone())),
                 "meta.description" => meta.description.push((lang.clone(), t.clone())),
+                // Every `catalog.<widget>.<name>[lang]` line (5.30), by
+                // PREFIX rather than by an enumerated key list: `meta.name`
+                // and `meta.description` above are the two keys THIS THEME
+                // owns, but a catalog string is UI VOCABULARY the master
+                // ships wholesale, so a new `catalog.*` entry must not also
+                // need a new match arm here.
+                k if k.starts_with("catalog.") => {
+                    meta.catalog.push((kv.key.clone(), lang.clone(), t.clone()));
+                }
                 _ => {}
             }
         }
@@ -2236,6 +2287,116 @@ mod tests {
         for n in schema.names() {
             assert!(schema.id(n).is_some(), "{n} interned but not addressable");
         }
+    }
+
+    // ------------------------------------------------------- 5.30 catalog
+
+    /// The proof `collect_meta` was widened to catch, mirroring `meta.name`'s
+    /// own round trip through `Schema.localised` (cascade.rs's
+    /// `localised_names_never_become_tokens`): a locale-tagged `catalog.*`
+    /// key parses, never becomes a schema TOKEN (a reference to
+    /// `catalog.winframe.move[pl]` could not resolve it), and lands in
+    /// `ThemeDiagnostics.catalog` verbatim.
+    #[test]
+    fn a_locale_tagged_catalog_key_round_trips_into_diagnostics() {
+        let mut out = Vec::new();
+        let mut src = Sources::new();
+        let text = "[meta]\nschema = 1\nname = \"t\"\n\n\
+                     [catalog]\nwinframe.move = \"MOVE\"\nwinframe.move[pl] = \"Przenieś\"\n";
+        let f = src.add("default.theme", text);
+        let doc = parse::parse(&mut src, f, None, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let schema = Schema::from_default(&doc, &mut out);
+        assert!(schema.id("catalog.winframe.move").is_some());
+        assert!(schema.id("catalog.winframe.move[pl]").is_none());
+
+        let mut meta = ThemeDiagnostics::default();
+        collect_meta(&mut meta, &schema, &doc, None);
+        assert_eq!(
+            meta.catalog,
+            vec![("catalog.winframe.move".to_string(), "pl".to_string(), "Przenieś".to_string())]
+        );
+    }
+
+    /// `[meta] locale` picks which `catalog.*[lang]` sibling
+    /// `ThemeDiagnostics::catalog_text` answers with — exact locale first,
+    /// then the untagged base (the same base `text`/`type.ellipsis` reads),
+    /// then the caller's own literal for a key the theme never declares.
+    #[test]
+    fn catalog_text_prefers_exact_locale_then_untagged_then_the_callers_fallback() {
+        let mut out = Vec::new();
+        let mut src = Sources::new();
+        let text = "[meta]\nschema = 1\nname = \"t\"\nlocale = \"pl\"\n\n\
+                     [catalog]\n\
+                     winframe.move = \"MOVE\"\nwinframe.move[pl] = \"Przenieś\"\n\
+                     winframe.resize = \"RESIZE\"\n";
+        let f = src.add("default.theme", text);
+        let doc = parse::parse(&mut src, f, None, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let schema = Schema::from_default(&doc, &mut out);
+
+        let mut meta = ThemeDiagnostics::default();
+        collect_meta(&mut meta, &schema, &doc, None);
+        assert_eq!(meta.locale, "pl");
+        // The untagged base: what `collect_texts` fills from a resolved
+        // `Engine` at load, built here by the same walk rather than by
+        // reaching for the process-wide engine — `bake_over_master`'s own
+        // header gives the reason: a test must not decide what every
+        // other test running beside it draws from.
+        let r = resolve::resolve_default(&schema, &mut out);
+        for (i, v) in r.values.iter().enumerate() {
+            if let Value::Text(t) = v {
+                meta.texts.push((schema.name(TokenId(i as u16)).to_string(), t.clone()));
+            }
+        }
+
+        assert_eq!(meta.catalog_text("catalog.winframe.move", "MOVE"), "Przenieś");
+        // Declared, but with no `pl` sibling: the untagged base, not the
+        // caller's literal.
+        assert_eq!(meta.catalog_text("catalog.winframe.resize", "RESIZE"), "RESIZE");
+        // Not declared at all: only the caller's own literal is left.
+        assert_eq!(meta.catalog_text("catalog.winframe.close", "CLOSE"), "CLOSE");
+    }
+
+    /// The same fixture with NO `[meta] locale` line: `ThemeDiagnostics`
+    /// defaults its `locale` to "" — `name`'s own untagged convention (5.1)
+    /// — so a catalog lookup answers the untagged row even though a `pl`
+    /// sibling exists right beside it.
+    #[test]
+    fn no_meta_locale_reads_the_untagged_catalog_row() {
+        let mut out = Vec::new();
+        let mut src = Sources::new();
+        let text = "[meta]\nschema = 1\nname = \"t\"\n\n\
+                     [catalog]\nwinframe.move = \"MOVE\"\nwinframe.move[pl] = \"Przenieś\"\n";
+        let f = src.add("default.theme", text);
+        let doc = parse::parse(&mut src, f, None, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        let schema = Schema::from_default(&doc, &mut out);
+
+        let mut meta = ThemeDiagnostics::default();
+        collect_meta(&mut meta, &schema, &doc, None);
+        assert_eq!(meta.locale, "");
+        let r = resolve::resolve_default(&schema, &mut out);
+        for (i, v) in r.values.iter().enumerate() {
+            if let Value::Text(t) = v {
+                meta.texts.push((schema.name(TokenId(i as u16)).to_string(), t.clone()));
+            }
+        }
+        assert_eq!(meta.catalog_text("catalog.winframe.move", "MOVE"), "MOVE");
+    }
+
+    /// The shipped master end to end: its own `[meta] locale` is "" (5.1's
+    /// untagged convention), so `diagnostics()` — the live, process-wide
+    /// answer `object::winframe` and `object::toaster` actually read —
+    /// draws the untagged row despite the `pl` sibling default.theme also
+    /// ships, and a key nobody declared falls to the caller's literal.
+    #[test]
+    fn the_shipped_masters_catalog_matches_its_locale_and_falls_back_when_absent() {
+        let _ = resolved();
+        let diags = diagnostics();
+        assert_eq!(diags.locale(), "");
+        assert_eq!(diags.catalog_text("catalog.winframe.move", "MOVE"), "MOVE");
+        assert_eq!(diags.catalog_text("catalog.no.such.key", "FALLBACK"), "FALLBACK");
     }
 
     #[test]
