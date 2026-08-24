@@ -467,6 +467,60 @@ impl Primaries {
         ];
         invert3(rgb_to_xyz)
     }
+
+    /// A chromaticity `xy` — any space's own primary, not necessarily
+    /// `self`'s — decomposed as a WEIGHT TRIPLE in **sRGB's own** r/g/b
+    /// basis: `[x/y, 1, (1-x-y)/y]` (that chromaticity's own XYZ at Y = 1)
+    /// run through [`Primaries::SRGB`]'s [`xyz_to_linear_rgb`], unclamped —
+    /// a component going negative is exactly `xy` lying outside sRGB's own
+    /// triangle, which is the question this function exists to answer.
+    ///
+    /// [`xyz_to_linear_rgb`]: Primaries::xyz_to_linear_rgb
+    ///
+    /// WHAT THIS IS FOR: the colour picker's gamut-boundary triangle
+    /// (`object::color_picker::draw`) places a wide gamut's own primaries
+    /// on a wheel whose hue and saturation ARE `rgb_to_hsv` of an
+    /// sRGB-encoded colour — hue 0/120/240° are sRGB's own red/green/blue
+    /// by that function's construction, and saturation 1 is sRGB's own
+    /// edge (the module header there, "HSV AND NOT OKLCh", is the ruling
+    /// this leans on). Running a target primary's `xy` through THIS matrix
+    /// and then through THAT SAME `rgb_to_hsv` asks one coherent question —
+    /// "what hue and saturation would this chromaticity read as, in the
+    /// terms the wheel already speaks?" — with the wheel's own law, not a
+    /// second one invented for the curve alone.
+    ///
+    /// TWO ANCHORS FALL OUT OF THE SAME ARITHMETIC, NOT A SPECIAL CASE FOR
+    /// EITHER — READ IN `rgb_to_hsv` TERMS, WHICH IS THE ONLY TERM THAT
+    /// MATTERS HERE, since hue and saturation are what a caller does with
+    /// this triple next and both are invariant to a positive uniform
+    /// rescale. Feed sRGB's own red back in: this function passes the
+    /// chromaticity through at a FIXED `Y = 1`, not through the same
+    /// per-primary scale [`xyz_to_linear_rgb`]'s own matrix was built with
+    /// (the `s` in that method's body), so the weight triple back is
+    /// `[k, 0, 0]` for some `k > 0` and not literally `[1, 0, 0]` — but
+    /// `rgb_to_hsv`'s hue ignores an overall scale entirely and its
+    /// saturation is `(max - min) / max`, which is exactly 1 whenever the
+    /// other two components are exactly 0 regardless of what `k` is. So
+    /// the READING is hue 0°, saturation 1 — the wheel's own rim — even
+    /// though the raw triple is not literally `[1, 0, 0]`.
+    /// Feed in any space's white point (every [`Primaries`] constant here
+    /// shares sRGB's D65) and the weights come back EXACTLY `[1, 1, 1]`,
+    /// no scale ambiguity at all: [`xyz_to_linear_rgb`] is built (its own
+    /// doc, above) so that unit RGB reproduces the white point's OWN
+    /// `Y = 1` chromaticity exactly — the definition of "white" in a
+    /// coherent additive space, and the one case where this function's own
+    /// `Y = 1` convention matches the matrix's internal scale by
+    /// construction. `rgb_to_hsv` of an equal triple is saturation 0, the
+    /// wheel's own centre. Neither anchor is asserted by this function;
+    /// both are the one decomposition landing where a coherent RGB
+    /// system's own definitions put it, one exactly and one up to a scale
+    /// that the reading downstream never sees.
+    pub fn in_srgb_basis(xy: (f32, f32)) -> [f32; 3] {
+        let (x, y) = xy;
+        let y = y.max(1e-6);
+        let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+        mul_mat_vec(Primaries::SRGB.xyz_to_linear_rgb(), xyz)
+    }
 }
 
 /// The sRGB (D65) linear-light -> CIE XYZ matrix (IEC 61966-2-1 / Bruce
@@ -765,6 +819,56 @@ mod tests {
             &Primaries::SRGB,
         );
         assert!(!in_gamut(just_over), "a chroma just past the bisection's answer should not be");
+    }
+
+    #[test]
+    fn in_srgb_basis_anchors_a_primary_at_the_rim_and_white_at_the_centre() {
+        //! [`Primaries::in_srgb_basis`]'s own doc claims two anchors fall
+        //! out of ONE decomposition rather than being asserted specially:
+        //! sRGB's own primaries come back PURELY ALONG THEIR OWN AXIS
+        //! (some positive `k` in their own slot, the other two exactly 0
+        //! — not literally `[1, 0, 0]`, since this function's fixed
+        //! `Y = 1` is not the matrix's own per-primary scale, and the doc
+        //! is explicit about that), and any shared white point is unit RGB
+        //! (`[1, 1, 1]`, exactly, no scale ambiguity) by construction of
+        //! `xyz_to_linear_rgb`. Checked here directly, in weight-triple
+        //! terms, before the picker's own test asks the same question one
+        //! step further along in hue/saturation terms — where an overall
+        //! scale on the primaries' own axis stops mattering at all.
+        let red = Primaries::in_srgb_basis(Primaries::SRGB.r);
+        assert!(red[0] > 0.5, "{red:?}");
+        assert!(approx(red[1] / red[0], 0.0, 1e-4) && approx(red[2] / red[0], 0.0, 1e-4), "{red:?}");
+        let green = Primaries::in_srgb_basis(Primaries::SRGB.g);
+        assert!(green[1] > 0.5, "{green:?}");
+        assert!(approx(green[0] / green[1], 0.0, 1e-4) && approx(green[2] / green[1], 0.0, 1e-4), "{green:?}");
+        let blue = Primaries::in_srgb_basis(Primaries::SRGB.b);
+        assert!(blue[2] > 0.5, "{blue:?}");
+        assert!(approx(blue[0] / blue[2], 0.0, 1e-4) && approx(blue[1] / blue[2], 0.0, 1e-4), "{blue:?}");
+        // Display P3 shares sRGB's own blue primary exactly — one more
+        // check that a DIFFERENT space's primary, when it happens to
+        // coincide with sRGB's, decomposes along the same axis rather
+        // than picking up noise from going the long way round.
+        let p3_blue = Primaries::in_srgb_basis(Primaries::DISPLAY_P3.b);
+        assert!(p3_blue[2] > 0.5, "{p3_blue:?}");
+        assert!(approx(p3_blue[0] / p3_blue[2], 0.0, 1e-4) && approx(p3_blue[1] / p3_blue[2], 0.0, 1e-4), "{p3_blue:?}");
+        // Every named space here shares sRGB's own D65, so every one of
+        // their white points decomposes to unit RGB, not only sRGB's own.
+        for p in [Primaries::SRGB, Primaries::DISPLAY_P3, Primaries::ADOBE_RGB, Primaries::BT2020] {
+            let w = Primaries::in_srgb_basis(p.white);
+            assert!(
+                approx(w[0], 1.0, 1e-3) && approx(w[1], 1.0, 1e-3) && approx(w[2], 1.0, 1e-3),
+                "{p:?}'s white point: {w:?}"
+            );
+        }
+        // A primary genuinely OUTSIDE sRGB's own triangle carries a
+        // negative weight on the component it left behind — Display P3's
+        // red reaches further than sRGB's own, so decomposing it in
+        // sRGB's basis must borrow negatively from green or blue.
+        let p3_red = Primaries::in_srgb_basis(Primaries::DISPLAY_P3.r);
+        assert!(
+            p3_red[1] < 0.0 || p3_red[2] < 0.0,
+            "Display P3's red reads as fully inside sRGB's triangle: {p3_red:?}"
+        );
     }
 
     #[test]

@@ -24,17 +24,43 @@
 //! pins past r = 1 — there is nothing to interpolate.
 //!
 //! A SQUARE AND NOT A CIRCLE IS ALSO WHY A WIDE GAMUT HAS SOMEWHERE TO
-//! DRAW ITSELF. When `draw()` is handed a [`GamutSpace`], it walks the
-//! wheel's own hue spokes and asks OKLCh, at each spoke's own lightness
-//! and hue, how much chroma a wide gamut (Display P3, Adobe RGB,
-//! BT.2020) holds there against how much sRGB does — `Color::max_chroma_in`
-//! (`theme::color`), the SAME 22-step bisection §6.2 states, generalised
-//! to arbitrary primaries and never reimplemented. The ratio is a
-//! radius, `wheel_point_unclamped` places it, and `DrawList::polyline`
-//! draws the whole closed curve: 1.0 exactly on the wheel's own rim for
-//! sRGB, past 1.0 wherever the wider gamut reaches beyond it — and it can
-//! reach past 1.0 because the field is a square with corners at √2, not a
-//! circle with nowhere further to go.
+//! DRAW ITSELF. When `draw()` is handed a [`GamutSpace`], it draws that
+//! space's own gamut boundary as what a real RGB gamut's boundary
+//! actually is: THREE STRAIGHT EDGES between its three primaries, fixed
+//! in shape and answering to no lightness at all — never a per-hue
+//! sampled curve (an earlier version of this drew exactly that, one
+//! spoke per hue wedge, each spoke's radius a chroma ratio taken at that
+//! spoke's OWN OKLCh lightness — which wobbled with `v` and was never a
+//! gamut's real shape to begin with, since chromaticity does not depend
+//! on how bright the colour built from it is). `theme::color::Primaries::
+//! in_srgb_basis` decomposes each of the caller's three primaries' own
+//! CIE xy into the SAME sRGB-relative terms the wheel's own hue and
+//! saturation already are (its own doc has the argument in full: sRGB's
+//! own primaries decompose purely along their own axis, which `rgb_to_hsv`
+//! reads as hue 0/120/240° at saturation exactly 1 — the wheel's own rim —
+//! regardless of the scale that decomposition lands on, and any shared
+//! white point decomposes to unit RGB exactly, which is saturation 0, the
+//! wheel's own centre — both by construction, not by a special case in
+//! this file); `rgb_to_hsv` turns
+//! each decomposition into an (hue, radius) pair the SAME way it always
+//! has, `wheel_point_unclamped` places it, and `DrawList::polyline` draws
+//! the closed three-point triangle — past the rim, toward the square's
+//! own corners, wherever a primary reaches further than sRGB's own.
+//!
+//! THIS IS A STYLISED TRIANGLE, NOT A LITERAL CIE 1931 xy DIAGRAM
+//! TRACED ONTO THE FIELD — the same trade the wheel itself already makes
+//! (hue as angle, saturation as radius, next paragraph below) rather than
+//! plotting sRGB-encoded colour in its own literal x/y plane. An edge
+//! between two mapped primaries is a straight line ON SCREEN, anchored
+//! exactly at both ends; it is not claimed to retrace every intermediate
+//! chromaticity of the real gamut edge along the way, because the
+//! wheel's own polar coordinates are not a straightness-preserving map of
+//! CIE xy and nothing short of drawing the field itself in literal xy
+//! (a different, much larger change to what the field's axes mean) could
+//! make that claim honestly. What this triangle DOES guarantee, and what
+//! the earlier curve did not: exactly three straight edges, matching a
+//! real RGB gamut's own edge count, and a shape that cannot move when
+//! `v` does, because no lightness enters the computation anywhere.
 //!
 //! HDR LUMINANCE IS A SECOND, ADDITIONAL BAR, not a reinterpretation of
 //! the value bar above: the value bar keeps meaning SDR value, in every
@@ -307,13 +333,14 @@ pub fn wheel_point(hue_deg: f32, sat: f32) -> (f32, f32) {
 }
 
 /// [`wheel_point`] without the saturation clamp — for the gamut-boundary
-/// curve, whose radius is a wide gamut's chroma against sRGB's own at the
-/// same lightness and hue, and legitimately exceeds 1.0 wherever that
-/// gamut reaches past the wheel's inscribed rim toward the square field's
-/// own corners. Every OTHER caller wants the clamp — a handle's own
-/// position is never past the wheel it stands on — which is why this is
-/// a second function and not `wheel_point` with an argument nobody but
-/// the curve would ever pass differently.
+/// triangle's three vertices, each a primary's own chromaticity decomposed
+/// into sRGB-relative hue and saturation
+/// ([`theme::color::Primaries::in_srgb_basis`]), which legitimately
+/// exceeds 1.0 wherever that primary reaches past the wheel's inscribed
+/// rim toward the square field's own corners. Every OTHER caller wants the
+/// clamp — a handle's own position is never past the wheel it stands on —
+/// which is why this is a second function and not `wheel_point` with an
+/// argument nobody but the triangle would ever pass differently.
 pub fn wheel_point_unclamped(hue_deg: f32, sat: f32) -> (f32, f32) {
     let r = hue_deg.to_radians();
     (0.5 + 0.5 * sat * r.cos(), 0.5 + 0.5 * sat * r.sin())
@@ -1279,27 +1306,25 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color], space: Opti
     }
     frame(ctx, l.field);
 
-    // ---- the gamut-boundary curve, iff the caller named a space: one
-    // spoke per hue wedge, this spoke's OWN OKLCh lightness and hue (so
-    // the curve is self-consistent with the colours under it — the
-    // module header's "HSV AND NOT OKLCh" ruling fixes what plane the
-    // FIELD is drawn in, not what plane a wide gamut's own chroma is
-    // measured in), and a radius that is a wide gamut's chroma ceiling
-    // there against sRGB's own — 1.0 exactly on the wheel's rim for
-    // sRGB, past it wherever the target gamut reaches beyond sRGB toward
-    // the square's own corners.
+    // ---- the gamut-boundary triangle, iff the caller named a space:
+    // THREE STRAIGHT EDGES between the space's own three primaries, never
+    // a per-hue sampled curve and never touching `v` — a real RGB gamut's
+    // chromaticity boundary is exactly this shape and it does not move
+    // when the picker's own lightness does (module header, "A SQUARE AND
+    // NOT A CIRCLE"). Each primary's CIE xy goes through
+    // `Primaries::in_srgb_basis` into the wheel's own sRGB-relative hue
+    // and saturation terms, `wheel_point_unclamped` places it — past the
+    // rim, toward the square's own corners, wherever that primary reaches
+    // further than sRGB's own — and `DrawList::polyline` closes the
+    // triangle.
     if let Some(sp) = space {
-        let mut curve: Vec<[f32; 2]> = Vec::with_capacity(wedges);
-        for w in 0..wedges {
-            let h = w as f32 * 360.0 / wedges as f32;
-            let (r, g, b) = hsv_to_rgb(h, 1.0, v);
-            let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
-            let c_target = Color::max_chroma_in(spoke.l, spoke.h, &sp.primaries);
-            let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
-            let radius = c_target / c_srgb.max(1e-6);
-            let (fx, fy) = wheel_point_unclamped(h, radius);
-            curve.push([l.field.x + fx * l.field.w, l.field.y + fy * l.field.h]);
-        }
+        let vertex = |xy: (f32, f32)| {
+            let [pr, pg, pb] = theme::color::Primaries::in_srgb_basis(xy);
+            let (h, s, _) = rgb_to_hsv(pr, pg, pb);
+            let (fx, fy) = wheel_point_unclamped(h, s);
+            [l.field.x + fx * l.field.w, l.field.y + fy * l.field.h]
+        };
+        let curve = [vertex(sp.primaries.r), vertex(sp.primaries.g), vertex(sp.primaries.b)];
         ctx.dl.polyline(
             &curve,
             t.px(tok(&BORDER, "picker.border")),
@@ -2224,42 +2249,54 @@ mod tests {
     }
 
     #[test]
-    fn the_gamut_curve_sits_on_the_wheels_own_rim_for_srgb_and_past_it_for_a_wider_gamut() {
-        //! The curve's own law (module header, "A SQUARE AND NOT A
-        //! CIRCLE"): a spoke's radius is a target gamut's own chroma
-        //! ceiling divided by sRGB's at that spoke's OWN OKLCh lightness
-        //! and hue — 1.0 exactly when the target IS sRGB (the wheel's own
-        //! rim), and past 1.0 for a gamut sRGB does not reach. Checked
-        //! directly against `Color::max_chroma_in`, the same function
-        //! `draw` calls, rather than against a second implementation of
-        //! the ratio.
-        let p = Picker::of(Color::rgb8(0xB0, 0x30, 0x30));
-        let n = (theme::resolved().px(theme::id("picker.hue_stops").expect("declared")).round() as usize).clamp(2, 64);
-        let (wedges, _) = wheel_tessellation(n);
-        for w in 0..wedges {
-            let h = w as f32 * 360.0 / wedges as f32;
-            let (r, g, b) = hsv_to_rgb(h, 1.0, p.hsv[2]);
-            let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
-            let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
-            let want_srgb_radius = c_srgb / c_srgb.max(1e-6);
-            approx(want_srgb_radius, 1.0, 1e-4, &format!("sRGB targeting itself at wedge {w}"));
-            let c_p3 = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::DISPLAY_P3);
-            assert!(c_p3 >= c_srgb - 1e-4, "P3 chroma {c_p3} below sRGB's {c_srgb} at wedge {w}");
+    fn the_gamut_triangle_has_three_straight_edges_and_does_not_move_with_value() {
+        //! The triangle's own law (module header, "A SQUARE AND NOT A
+        //! CIRCLE"): three vertices, one per primary, each placed by
+        //! [`theme::color::Primaries::in_srgb_basis`] — sRGB's own
+        //! primaries land exactly on the wheel's rim at its own three
+        //! primary hues, a wider gamut's own primaries land past it, and
+        //! NONE of this reads `Picker::hsv`'s value at all, which is the
+        //! bug the earlier per-spoke OKLCh curve had and this replaces.
+        let srgb = theme::color::Primaries::SRGB;
+        let vertex_hue_sat = |xy: (f32, f32)| {
+            let [r, g, b] = theme::color::Primaries::in_srgb_basis(xy);
+            let (h, s, _) = rgb_to_hsv(r, g, b);
+            (h, s)
+        };
+        // Circular distance: `rgb_to_hsv`'s own `rem_euclid(360)` can land
+        // a hue that is really 0° at 360° minus a rounding hair, and 0°
+        // and 360° are the same direction on the wheel.
+        let hue_diff = |a: f32, b: f32| {
+            let d = (a - b).rem_euclid(360.0);
+            d.min(360.0 - d)
+        };
+        // sRGB targeting itself: the three vertices are exactly the
+        // wheel's own three primary hues, at the rim.
+        for (xy, want_hue) in [(srgb.r, 0.0), (srgb.g, 120.0), (srgb.b, 240.0)] {
+            let (h, s) = vertex_hue_sat(xy);
+            assert!(hue_diff(h, want_hue) < 1e-2, "sRGB primary at {xy:?}: hue {h} vs {want_hue}");
+            approx(s, 1.0, 1e-3, &format!("sRGB primary at {xy:?} sits on the rim"));
         }
-        // And at least one spoke of a genuinely wide gamut reaches past
-        // the wheel's own rim — the whole reason the field is a square
-        // and not a circle.
-        let widest = (0..wedges)
-            .map(|w| {
-                let h = w as f32 * 360.0 / wedges as f32;
-                let (r, g, b) = hsv_to_rgb(h, 1.0, p.hsv[2]);
-                let spoke = Color { r, g, b, a: 1.0 }.to_linear().to_oklch();
-                let c_srgb = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::SRGB);
-                let c_bt2020 = Color::max_chroma_in(spoke.l, spoke.h, &theme::color::Primaries::BT2020);
-                c_bt2020 / c_srgb.max(1e-6)
-            })
-            .fold(0.0f32, f32::max);
-        assert!(widest > 1.05, "no spoke of BT.2020 reached past the wheel's own rim: widest {widest}");
+        // A wider gamut's red primary reaches past the rim — the whole
+        // reason the field is a square and not a circle — at a hue close
+        // to sRGB's own red, not some unrelated direction.
+        let p3 = theme::color::Primaries::DISPLAY_P3;
+        let (h, s) = vertex_hue_sat(p3.r);
+        assert!(s > 1.0, "Display P3's red did not reach past the wheel's own rim: s={s}");
+        assert!(hue_diff(h, 0.0) < 15.0, "P3 red strayed to hue {h}");
+        // Display P3 shares sRGB's own blue primary exactly, so its
+        // vertex must land on the SAME point sRGB's own blue does.
+        let (h_b, s_b) = vertex_hue_sat(p3.b);
+        assert!(hue_diff(h_b, 240.0) < 1e-2, "P3's shared blue primary: hue {h_b}");
+        approx(s_b, 1.0, 1e-3, "P3's shared blue primary sits on the rim");
+        // NOTHING here reads `Picker::hsv` — the whole point is that no
+        // picker state, and in particular no lightness/value, enters this
+        // computation, so two pickers at different values agree on the
+        // same triangle. `draw`'s own vertex closure takes no `v` either;
+        // this is a structural guarantee, not a numeric probe of it.
+        let a = Picker::of(Color::rgb8(0xB0, 0x30, 0x30));
+        let b = Picker::of(Color::rgb8(0x10, 0x10, 0x10));
+        assert_ne!(a.hsv[2], b.hsv[2], "the two pickers must actually differ in value for this to test anything");
     }
 
     #[test]
