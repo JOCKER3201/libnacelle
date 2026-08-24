@@ -48,6 +48,7 @@
 //! today. Until then appearing is instantaneous, which is honest rather
 //! than half-animated.
 
+use crate::focus::FocusId;
 use crate::theme::{self, Color, TokenId};
 use crate::{ui, Ctx, Rect};
 use std::collections::hash_map::DefaultHasher;
@@ -173,6 +174,50 @@ impl Tooltips {
         self.shown.as_deref()
     }
 
+    /// The tooltip text currently on screen FOR THE CONTROL `id` names —
+    /// the accessible DESCRIPTION half of the name/description split
+    /// [`crate::access::AccessInfo`] draws: words that enrich an
+    /// ALREADY-focusable control, not a second name and not a second
+    /// Tab stop (this file's header explains why a tooltip is neither).
+    ///
+    /// `id` is [`FocusId`]'s own `u64` — nothing here hashes a name or
+    /// walks a registry, because there isn't one (see the header again:
+    /// "There is no registry of hover-able rectangles"). A control is
+    /// found only if it files its [`Tooltips::request`] /
+    /// [`Tooltips::hover`] with `id.0`, the very value it already hands
+    /// `FocusCtl::register` — a convention this file can honour but not
+    /// enforce from here.
+    ///
+    /// Answers from the same two fields that already back
+    /// [`Tooltips::rect`] and [`Tooltips::shown`], not a new registry:
+    /// `armed` is WHICH target the pointer is resting on, `shown` is
+    /// the words that target is due, and the two agree exactly while a
+    /// box is visible (see [`Tooltips::step`]) — so requiring both is
+    /// how a caller here is told apart from every other control, with
+    /// nothing added to remember. A control still waiting out
+    /// `tooltip.delay_ms`, or one the pointer has left, has nothing to
+    /// report yet, same as it has nothing on screen yet.
+    pub fn description_of(&self, id: FocusId) -> Option<&str> {
+        match (&self.armed, &self.shown) {
+            (Some(a), Some(text)) if a.id == id.0 => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    // FOLLOW-UP, out of THIS file's scope: `description_of` only reads
+    // as far as `Tooltips` itself goes. Landing its answer in an actual
+    // AT-SPI description means two things neither belongs here:
+    //   1. `crate::access::AccessInfo` gaining a `description: Option<String>`
+    //      field alongside `name` — a shape change to a type this file
+    //      does not own, and the foundation pass's call, not this one's.
+    //   2. Each control that both calls `FocusCtl::register` AND wants a
+    //      spoken description passing its `FocusId.0` as the id it hands
+    //      `Tooltips::request`/`Tooltips::hover` (today's callers mostly
+    //      use `tooltip::key`/`cell_key` string hashes instead, which do
+    //      NOT line up with any `FocusId`), then reading `description_of`
+    //      back with that same id when it builds its `AccessInfo` — i.e.
+    //      touching every such widget's own file, not this one.
+
     /// The rung a tooltip is a surface of, dressed in the tooltip's own
     /// key names.
     ///
@@ -200,11 +245,16 @@ impl Tooltips {
     /// due to be shown, given the two themed times in milliseconds.
     ///
     /// Separated from the drawing so the delay, the disarming and the
-    /// grace window can be tested without a window, a font or a theme.
+    /// grace window can be tested without a window, a font or a theme —
+    /// and `self.shown` is kept current HERE, for the same reason:
+    /// [`Tooltips::description_of`] answers from it too, and must be
+    /// exercisable by the same light-weight harness rather than needing
+    /// a real [`Ctx`] just to learn WHO the pointer is resting on.
     fn step(&mut self, now: f64, delay_ms: f32, linger_ms: f32) -> Option<(Rect, String)> {
         let Some(p) = self.pending.take() else {
             // Nothing asked this frame: the pointer left every anchor.
             self.armed = None;
+            self.shown = None;
             return None;
         };
         let fresh = match &self.armed {
@@ -217,12 +267,17 @@ impl Tooltips {
                 .is_some_and(|t0| (now - t0) * 1000.0 <= linger_ms as f64);
             self.armed = Some(Armed { id: p.id, since: p.t, instant });
         }
-        let a = self.armed.as_ref()?;
+        let Some(a) = self.armed.as_ref() else {
+            self.shown = None;
+            return None;
+        };
         let due = a.instant || (now - a.since) * 1000.0 >= delay_ms as f64;
         if !due {
+            self.shown = None;
             return None;
         }
         self.last_shown = Some(now);
+        self.shown = Some(p.text.clone());
         Some((p.anchor, p.text))
     }
 
@@ -243,7 +298,8 @@ impl Tooltips {
         let delay = t.px(tok(&DELAY, "tooltip.delay_ms"));
         let linger = t.px(tok(&LINGER, "tooltip.linger_ms"));
         self.rect = None;
-        self.shown = None;
+        // `self.shown` is `step`'s to keep current (see its own doc
+        // comment) — nothing to reset here before calling it.
         let Some((anchor, text)) = self.step(ctx.t, delay, linger) else { return };
 
         // ---- metrics ----------------------------------------------------
@@ -292,7 +348,7 @@ impl Tooltips {
         let (x, y) = place(ctx.mouse.raw(), anchor, (w, h), offset, (ctx.w, ctx.h));
         let r = Rect::new(x, y, w, h);
         self.rect = Some(r);
-        self.shown = Some(text.clone());
+        // `self.shown` already holds `text` — `step` set it.
 
         // ---- the box ----------------------------------------------------
         // Elev 5, the popover rung — a tooltip is one of the four surfaces
@@ -574,6 +630,70 @@ mod tests {
         assert!(!anchor().contains(9.0, 11.0));
         assert_ne!(key("CPU"), key("RAM"));
         assert_eq!(key("CPU"), key("CPU"));
+    }
+
+    // ---- description_of: the accessible-description lookup -----------
+
+    #[test]
+    fn description_of_answers_nothing_before_a_target_is_shown() {
+        let mut tips = Tooltips::new();
+        let id = FocusId(1);
+        // Nothing was ever filed for `id`.
+        assert!(tips.description_of(id).is_none());
+        // Filed, but the delay has not elapsed yet: armed, not shown.
+        frame(&mut tips, 0.0, Some((1, "CPU load")));
+        assert!(tips.description_of(id).is_none());
+    }
+
+    #[test]
+    fn description_of_answers_the_target_actually_shown() {
+        let mut tips = Tooltips::new();
+        let id = FocusId(1);
+        frame(&mut tips, 0.0, Some((1, "CPU load")));
+        let out = frame(&mut tips, 0.6, Some((1, "CPU load"))).expect("due at the delay");
+        assert_eq!(out.1, "CPU load");
+        assert_eq!(tips.description_of(id), Some("CPU load"));
+        // A different control's `FocusId` finds nothing, even while
+        // this one is on screen — `description_of` is not a registry
+        // of everything ever explained, only of what is showing now.
+        assert!(tips.description_of(FocusId(2)).is_none());
+    }
+
+    #[test]
+    fn description_of_follows_a_targets_refiled_words() {
+        // Same story as `a_target_that_keeps_its_identity_says_its_new_words…`
+        // above, read back through `description_of` instead of `step`'s
+        // own return value.
+        let mut tips = Tooltips::new();
+        let id = FocusId(1);
+        frame(&mut tips, 0.0, Some((1, "12.4 MB")));
+        frame(&mut tips, 0.6, Some((1, "12.4 MB")));
+        assert_eq!(tips.description_of(id), Some("12.4 MB"));
+        frame(&mut tips, 0.65, Some((1, "12.9 MB")));
+        assert_eq!(tips.description_of(id), Some("12.9 MB"));
+    }
+
+    #[test]
+    fn description_of_forgets_a_target_the_pointer_has_left() {
+        let mut tips = Tooltips::new();
+        let id = FocusId(1);
+        frame(&mut tips, 0.0, Some((1, "CPU load")));
+        frame(&mut tips, 0.6, Some((1, "CPU load")));
+        assert!(tips.description_of(id).is_some());
+        // The pointer leaves every anchor: no request at all this frame.
+        frame(&mut tips, 0.65, None);
+        assert!(tips.description_of(id).is_none());
+    }
+
+    #[test]
+    fn description_of_clears_with_everything_else() {
+        let mut tips = Tooltips::new();
+        let id = FocusId(1);
+        frame(&mut tips, 0.0, Some((1, "CPU load")));
+        frame(&mut tips, 0.6, Some((1, "CPU load")));
+        assert!(tips.description_of(id).is_some());
+        tips.clear();
+        assert!(tips.description_of(id).is_none());
     }
 
     // ---- the type ladder reaches the tooltip -------------------------
