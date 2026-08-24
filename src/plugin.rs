@@ -410,6 +410,33 @@ extern "C" fn h_ring(p: *mut c_void, r: RectC, style: u32, radius: f32, w: f32, 
     ctx.dl.ring(Rect::new(r.x, r.y, r.w, r.h), &corners, seg, w, color_in(c));
 }
 
+/// The glow of the same family — [`DrawList::glow_ring`] across the
+/// boundary, through the same [`corners_in`] translation `ring_fill` and
+/// `ring` use, so a plugin's chamfered badge glows on the exact octagon
+/// its fill and stroke drew rather than a second approximation of it.
+extern "C" fn h_ring_glow(
+    p: *mut c_void,
+    r: RectC,
+    style: u32,
+    radius: f32,
+    glow_radius: f32,
+    c: ColorC,
+) {
+    let Some(ctx) = (unsafe { ctx_of(p) }) else { return };
+    if r.w <= 0.0 || r.h <= 0.0 || !(glow_radius > 0.0) || c.a <= 0.0 {
+        return;
+    }
+    let (corners, seg) = corners_in(style, radius, r);
+    ctx.dl.glow_ring(
+        Rect::new(r.x, r.y, r.w, r.h),
+        &corners,
+        seg,
+        glow_radius,
+        color_in(c),
+        FontSystem::mask_soft_uv(),
+    );
+}
+
 /// A plugin's tooltip request, filed with the application's manager —
 /// the same call `CtxSurface::tooltip` makes, because it is the same
 /// request: the plugin may not draw the box (it would be covered by the
@@ -854,6 +881,7 @@ pub fn host_api() -> &'static HostApi {
         settings_read: h_settings_read,
         settings_epoch: h_settings_epoch,
         theme_text: h_theme_text,
+        ring_glow: h_ring_glow,
     };
     &API
 }
@@ -1474,8 +1502,9 @@ mod tests {
     fn the_host_table_grows_at_the_end_only() {
         use crate::runtime::{
             HOST_API_HAS_CHANNEL, HOST_API_HAS_CLIP, HOST_API_HAS_ENUM_WORD,
-            HOST_API_HAS_MASK_QUAD, HOST_API_HAS_RING, HOST_API_HAS_SETTINGS,
-            HOST_API_HAS_THEME_TEXT, HOST_API_HAS_TOOLTIP, HOST_API_SIZE_MIN,
+            HOST_API_HAS_MASK_QUAD, HOST_API_HAS_RING, HOST_API_HAS_RING_GLOW,
+            HOST_API_HAS_SETTINGS, HOST_API_HAS_THEME_TEXT, HOST_API_HAS_TOOLTIP,
+            HOST_API_SIZE_MIN,
         };
         let api = host_api();
         assert_eq!(api.api_size as usize, std::mem::size_of::<HostApi>());
@@ -1487,8 +1516,9 @@ mod tests {
         assert!(api.has_channel());
         assert!(api.has_settings());
         assert!(api.has_theme_text());
+        assert!(api.has_ring_glow());
         // The appended entries sit past the mandatory prefix, in order,
-        // with the text-token entry the current end of the table.
+        // with the ring-glow entry the current end of the table.
         assert!(HOST_API_SIZE_MIN < HOST_API_HAS_ENUM_WORD);
         assert!(HOST_API_HAS_ENUM_WORD < HOST_API_HAS_MASK_QUAD);
         assert!(HOST_API_HAS_MASK_QUAD < HOST_API_HAS_CLIP);
@@ -1497,7 +1527,8 @@ mod tests {
         assert!(HOST_API_HAS_TOOLTIP < HOST_API_HAS_CHANNEL);
         assert!(HOST_API_HAS_CHANNEL < HOST_API_HAS_SETTINGS);
         assert!(HOST_API_HAS_SETTINGS < HOST_API_HAS_THEME_TEXT);
-        assert_eq!(HOST_API_HAS_THEME_TEXT, std::mem::size_of::<HostApi>());
+        assert!(HOST_API_HAS_THEME_TEXT < HOST_API_HAS_RING_GLOW);
+        assert_eq!(HOST_API_HAS_RING_GLOW, std::mem::size_of::<HostApi>());
         // A host that stopped at the version-6 minimum answers none of
         // them, which is what a plugin's `has_*` gate is for.
         let old = HostApi { api_size: HOST_API_SIZE_MIN as u32, ..*api };
@@ -1509,6 +1540,13 @@ mod tests {
         assert!(!old.has_channel());
         assert!(!old.has_settings());
         assert!(!old.has_theme_text());
+        assert!(!old.has_ring_glow());
+        // A host that carries the text entry but stops there — the
+        // table as it stood before THIS growth — answers everything
+        // through `theme_text` and nothing past it.
+        let pre_ring_glow = HostApi { api_size: HOST_API_HAS_THEME_TEXT as u32, ..*api };
+        assert!(pre_ring_glow.has_theme_text());
+        assert!(!pre_ring_glow.has_ring_glow());
         // And a host from before the ring pair keeps the clips.
         let pre_ring = HostApi { api_size: HOST_API_HAS_CLIP as u32, ..*api };
         assert!(pre_ring.has_clip());

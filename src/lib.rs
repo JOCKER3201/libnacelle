@@ -71,6 +71,7 @@ pub mod motion;
 pub mod num;
 pub mod object;
 pub mod plugin;
+pub mod plugin_shapes;
 pub mod pointer;
 pub mod runtime;
 pub mod script;

@@ -29,6 +29,7 @@
 // cannot arrive on one side of the crossing alone.
 use crate::corner::code as corner_code;
 use crate::draw::{Corner, CornerStyle};
+use crate::font::FontSystem;
 use crate::theme::parse::State;
 use crate::theme::{self, Color, TokenId};
 use crate::ui::Align;
@@ -169,6 +170,14 @@ pub trait Surface {
     fn ring(&mut self, r: Rect, style: CornerStyle, radius: f32, w: f32, c: Color) {
         let _ = (style, radius);
         self.rect_outline(r, w, c);
+    }
+    /// The glow around the same ring — [`DrawList::glow_ring`]'s halo,
+    /// wearing the corners [`Surface::ring_fill`] and [`Surface::ring`]
+    /// already draw. The default is nothing, the same honest silence
+    /// [`Surface::ascent`] answers for a channel a surface does not
+    /// carry — never a glow shaped like the wrong corner.
+    fn ring_glow(&mut self, r: Rect, style: CornerStyle, radius: f32, glow_radius: f32, c: Color) {
+        let _ = (r, style, radius, glow_radius, c);
     }
     /// A filled convex quadrilateral — the sheared plate a tab is drawn
     /// on, which no rectangle can stand in for.
@@ -549,6 +558,14 @@ impl Surface for CtxSurface<'_, '_> {
         self.ctx.dl.ring(r, &corners, seg, w, c);
     }
 
+    fn ring_glow(&mut self, r: Rect, style: CornerStyle, radius: f32, glow_radius: f32, c: Color) {
+        if !(glow_radius > 0.0) || c.a <= 0.0 {
+            return;
+        }
+        let (corners, seg) = ring_parts(style, radius, r, corner_segments());
+        self.ctx.dl.glow_ring(r, &corners, seg, glow_radius, c, FontSystem::mask_soft_uv());
+    }
+
     fn quad(&mut self, pts: [[f32; 2]; 4], c: Color) {
         self.ctx.dl.quad(pts, c);
     }
@@ -812,6 +829,17 @@ impl Surface for AbiSurface<'_> {
             (self.api.ring)(self.ctx, rc(r), corner_code(style), radius, w, cc(c));
         } else {
             self.rect_outline(r, w, c);
+        }
+    }
+
+    /// An old host draws no glow at all — the trait's own default,
+    /// stated here rather than left to it because [`AbiSurface`] is the
+    /// one side of the boundary where "old" is a real host and not a
+    /// hypothetical, and never a hand-rolled approximation of the halo.
+    fn ring_glow(&mut self, r: Rect, style: CornerStyle, radius: f32, glow_radius: f32, c: Color) {
+        if self.api.has_ring_glow() {
+            let radius = ring_radius(radius, r);
+            (self.api.ring_glow)(self.ctx, rc(r), corner_code(style), radius, glow_radius, cc(c));
         }
     }
 

@@ -111,6 +111,20 @@ pub fn code(style: CornerStyle) -> u32 {
     }
 }
 
+/// [`cut`] and [`code`] in one step — a WORD straight to the ABI number
+/// a plugin's own `*_corner_style`/`*_corner_mode` reader wants, for the
+/// caller on the SENDING side of the boundary rather than the receiving
+/// one [`of_code`] serves.
+///
+/// This is the match four plugin `.so` files each wrote for themselves
+/// (`"round" => CORNER_ROUND, "chamfer" => CORNER_CHAMFER, _ =>
+/// CORNER_SQUARE`) before this existed — the same defect the module
+/// header describes for the object layer, one boundary further out.
+/// Unknown word: Square, silently, for the header's own reason.
+pub fn code_of(word: &str) -> u32 {
+    code(cut(word))
+}
+
 /// The cut an ABI number names — [`code`]'s inverse, and the reading a
 /// plugin's boundary arrives through.
 ///
@@ -247,6 +261,21 @@ mod tests {
         // the far side of the ABI rather than from a theme.
         assert_eq!(of_code(9), CornerStyle::Square);
         assert_eq!(of_code(u32::MAX), CornerStyle::Square);
+    }
+
+    /// [`code_of`] is [`cut`] then [`code`], so the four plugin `.so`
+    /// files this replaced (`"round" => CORNER_ROUND, "chamfer" =>
+    /// CORNER_CHAMFER, _ => CORNER_SQUARE`) get exactly the number their
+    /// own match gave, for every declared word and for the unknown one.
+    #[test]
+    fn code_of_is_cut_then_code() {
+        for (word, _) in WORDS {
+            assert_eq!(code_of(word), code(cut(word)), "{word}");
+        }
+        assert_eq!(code_of("round"), crate::runtime::CORNER_ROUND);
+        assert_eq!(code_of("chamfer"), crate::runtime::CORNER_CHAMFER);
+        assert_eq!(code_of("square"), crate::runtime::CORNER_SQUARE);
+        assert_eq!(code_of("hexagon"), crate::runtime::CORNER_SQUARE, "unnamed is square");
     }
 
     /// The index reading and the word reading answer the same cut for

@@ -687,6 +687,29 @@ pub struct HostApi {
     /// the host by a scan of every text key the theme declares — cheap
     /// once per theme, wrong once per frame.
     pub theme_text: extern "C" fn(ctx: *mut c_void, id: u32, buf: *mut u8, cap: u32) -> u32,
+    /// The glow of the family's ring — [`DrawList::glow_ring`] across the
+    /// boundary, wearing the same [`CORNER_SQUARE`]/[`CORNER_ROUND`]/
+    /// [`CORNER_CHAMFER`] vocabulary and the same `radius` translation
+    /// [`HostApi::ring_fill`] and [`HostApi::ring`] already carry —
+    /// `style`, `radius` name the SAME shape a fill or a stroke on this
+    /// rect would wear, and `glow_radius` is how far the light reaches
+    /// past it. Until this existed, a plugin wanting a glow on a
+    /// chamfered corner had no door through the boundary for it at all
+    /// and extruded the octagon by hand out of [`HostApi::mask_quad`] —
+    /// which is why the file browser's tiles carried their own glow
+    /// code beside their own corner code. Gated by
+    /// [`HostApi::has_ring_glow`]; an old host draws no glow, the same
+    /// degradation [`HostApi::ring_fill`] already answers for the ring
+    /// itself when [`HostApi::has_ring`] is false — never a hand-rolled
+    /// approximation of one.
+    pub ring_glow: extern "C" fn(
+        ctx: *mut c_void,
+        r: RectC,
+        style: u32,
+        radius: f32,
+        glow_radius: f32,
+        c: ColorC,
+    ),
 }
 
 /// The longest topic name the channel accepts. A name is a constant in
@@ -802,6 +825,10 @@ pub const HOST_API_HAS_SETTINGS: usize =
 pub const HOST_API_HAS_THEME_TEXT: usize =
     std::mem::offset_of!(HostApi, theme_text) + std::mem::size_of::<usize>();
 
+/// The prefix that includes `ring_glow`.
+pub const HOST_API_HAS_RING_GLOW: usize =
+    std::mem::offset_of!(HostApi, ring_glow) + std::mem::size_of::<usize>();
+
 /// [`HostApi::mask_quad`]: blend additively — the quad adds light, the
 /// way the host's own glow does. Without it the quad covers, the way its
 /// shadows do.
@@ -865,6 +892,14 @@ impl HostApi {
     /// from a quiet theme, or it would grow a fallback for one of them.
     pub fn has_theme_text(&self) -> bool {
         self.api_size as usize >= HOST_API_HAS_THEME_TEXT
+    }
+
+    /// Whether this host can glow the family's ring for a plugin. Absent:
+    /// no glow at all — a plain ring or fill without the halo around it,
+    /// which is a visible but honest degradation, never an approximation
+    /// built out of [`HostApi::mask_quad`] by hand.
+    pub fn has_ring_glow(&self) -> bool {
+        self.api_size as usize >= HOST_API_HAS_RING_GLOW
     }
 
     /// A text token by NAME, resolved and copied out — the plugin-side
