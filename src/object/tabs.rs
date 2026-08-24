@@ -22,7 +22,7 @@
 //! (`type.button.case = upper`) and may not on a theme that moves it.
 
 use super::focus_ring;
-use crate::access::{AccessInfo, Role};
+use crate::access::{AccessInfo, Role, States};
 use crate::focus::{Caps, FocusId, Key, KeyEv, Mods};
 use crate::theme::parse::State;
 use crate::theme::{self, Color, TokenId};
@@ -427,6 +427,15 @@ pub fn draw(ctx: &mut Ctx, r: Rect, labels: &[&str], st: &StripState) -> Vec<Rec
 /// [`StripState`] rather than in the chain. The ring is drawn around the
 /// SHOWING cell, and only when the chain says a ring is due; focus is
 /// never a rung of the ladder.
+///
+/// The [`AccessInfo`] this registers speaks for the ACTIVE cell, not
+/// the strip as a whole — a roving-tabindex control has only the one
+/// `FocusId` to report through, so it reports the cell a Tab press
+/// would land the ring on. `States::SELECTED` says that cell is the
+/// showing page, and `with_index` gives its one-based position among
+/// `labels.len()` — "2 of 5" is what a screen reader turns that pair
+/// into. Both are recomputed every draw from `st.active`, so the
+/// announcement follows the arrows without a second registration.
 pub fn draw_focusable(
     ctx: &mut Ctx,
     r: Rect,
@@ -437,7 +446,14 @@ pub fn draw_focusable(
     static SKEW: OnceLock<TokenId> = OnceLock::new();
     let active_label = labels.get(st.active).copied().unwrap_or("");
     let f = ctx.focus.as_deref_mut().map(|fc| {
-        fc.register(id, r, Caps::GREEDY_ARROWS, AccessInfo::new(Role::Tab, active_label))
+        fc.register(
+            id,
+            r,
+            Caps::GREEDY_ARROWS,
+            AccessInfo::new(Role::Tab, active_label)
+                .with_states(States::SELECTED)
+                .with_index(st.active as u32 + 1, labels.len() as u32),
+        )
     });
     let cells = draw(ctx, r, labels, st);
     if let Some(cell) = cells.get(st.active) {
@@ -537,6 +553,57 @@ mod tests {
         assert_eq!(st.active, 2);
         // A strip with no cells has no key to eat.
         assert!(!key(&mut st, 0, &ev(Key::Right, Mods::NONE)));
+    }
+
+    /// `draw_focusable`'s ONE registration has to speak for whichever
+    /// cell is active, since a roving-tabindex strip has no second
+    /// `FocusId` to hang a per-cell report from. Drives the real
+    /// function end to end — through a live `FocusCtl` — rather than
+    /// re-deriving the `AccessInfo` by hand, so a future edit that
+    /// changes what gets built there also breaks this.
+    #[test]
+    fn draw_focusable_reports_the_active_cell_selected_and_indexed() {
+        use crate::draw::DrawList;
+        use crate::focus::FocusCtl;
+        use crate::font::FontSystem;
+        use crate::pointer::Pointer;
+
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        let labels = ["General", "Network", "About"];
+        // The middle page is showing: a one-based "2 of 3" is what a
+        // screen reader should turn `st.active == 1` into.
+        let st = StripState::new(1);
+        let id = FocusId::of("test.tabs");
+        let r = Rect::new(0.0, 0.0, 300.0, 32.0);
+        let mut ctx = Ctx {
+            access: None,
+            dl: &mut dl,
+            fonts: &mut fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 0.0,
+            mouse: Pointer::new(0.0, 0.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: Some(&mut fc),
+            tips: None,
+        };
+        draw_focusable(&mut ctx, r, &labels, &st, id);
+
+        // The registration lands in `cur`; `begin_frame` is the frame
+        // boundary that promotes it to what `entries()` answers, same
+        // as every other FocusCtl/AccessCtl consumer in this crate.
+        fc.begin_frame();
+        let got: Vec<_> = fc.entries().collect();
+        assert_eq!(got.len(), 1);
+        let info = got[0].2;
+        assert_eq!(info.role, Role::Tab);
+        assert_eq!(info.name, "Network");
+        assert!(info.states.contains(States::SELECTED));
+        assert_eq!(info.index, Some((2, 3)));
     }
 
     #[test]
