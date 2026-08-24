@@ -121,6 +121,16 @@ pub fn glass_rank_handle(rank: u8) -> ImageId {
     }
 }
 
+/// Whether a run's handle is one of the three `SHAPE_GLASS_*` — the
+/// band's own lane, and the question [`DrawList::ring_grad`] asks of an
+/// open weld before it will land a gradient on it (K3b's second bounded
+/// edge case). `Frost` claims no flag on the record itself (§3.3's own
+/// note at [`Shape::KIND_SHIFT`]), so the RUN is the only place this can
+/// be read.
+pub(crate) fn is_shape_glass(img: ImageId) -> bool {
+    img == SHAPE_GLASS_1 || img == SHAPE_GLASS_2 || img == SHAPE_GLASS_3
+}
+
 /// Whether a handle is one of the reserved instructions rather than a
 /// registered texture.
 pub fn is_reserved(id: ImageId) -> bool {
@@ -422,6 +432,32 @@ pub struct ShapeSpec {
 pub struct Frost {
     pub rank: u8,
     pub tint: Color,
+    /// What the RECORD's BAND carries, when it must differ from `tint`
+    /// (K3c). `None` means "the same colour" — every caller but one, and
+    /// the record ends up with `tint` exactly as it always did.
+    ///
+    /// The one caller is [`DrawList::glass_fill`]'s fractional path.
+    /// `tint` there still governs the CORE — the two rungs' plain quads,
+    /// composed straight (the core is artifact-free: `cov` is 1
+    /// throughout it, so two sequential blends of a constant alpha are
+    /// exact, not a double count). The BAND is the opposite case: it is
+    /// the silhouette's own outer edge, and a SECOND record blending a
+    /// SECOND coverage ramp there is the defect `glass_fill`'s own doc
+    /// names — `c·(1 − c)·a·b` of excess alpha, repeated because two
+    /// runs cannot fold into one fragment (closing THAT needs a
+    /// fragment that reads two pyramid targets, a renderer change on
+    /// the far side of the repository boundary).
+    ///
+    /// This field answers the part that does not need the renderer to
+    /// change: a record's BAND coverage is evaluated once regardless of
+    /// how many records carry a frost, so let exactly one of the two
+    /// carry it. The lower rung's band is silenced (alpha 0 — its own
+    /// core still shows, unaffected); the upper rung's band is set to
+    /// the two rungs' COMBINED alpha `a1 + a2 − a1·a2`, the standard
+    /// over-composite of two fully-covering layers, which is exactly
+    /// what the one coverage evaluation that survives is supposed to
+    /// fold in.
+    pub band_tint: Option<Color>,
 }
 
 /// A bed still open to the parts that belong to it (f3 §2.10).
@@ -2287,6 +2323,94 @@ impl DrawList {
         self.scratch_b = inner;
     }
 
+    /// The snapped rect, resolved corner radii, half-extent and centre a
+    /// Box-kind [`ShapeSpec`] over `(r, corners)` would carry into its
+    /// record — `shape_verts`' own snap (§2.7) and corner resolution
+    /// (R9), copied rather than shared: `shape_verts` takes a whole
+    /// `ShapeSpec` and does six other things with it besides, and a
+    /// read-only preflight has no business behind that door. Kept a
+    /// LITERAL copy of that one branch so the two cannot silently drift:
+    /// a divergence here only ever makes [`Self::open_glass_weld`]
+    /// answer "no" where `shape_verts` would have welded, never the
+    /// other way, which is the safe direction to be wrong in.
+    fn box_silhouette(
+        &self,
+        mut r: Rect,
+        corners: &[Corner; 4],
+    ) -> Option<(Rect, [f32; 4], [f32; 2], [f32; 2])> {
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return None;
+        }
+        if self.warp <= 1 {
+            let x1 = (r.x + r.w).round();
+            let y1 = (r.y + r.h).round();
+            r.x = r.x.round();
+            r.y = r.y.round();
+            r.w = x1 - r.x;
+            r.h = y1 - r.y;
+            if r.w <= 0.0 || r.h <= 0.0 {
+                return None;
+            }
+        }
+        let cap = (r.w.min(r.h) * 0.5).max(0.0);
+        let same = crate::theme::expr::sentinel("same_as_parent").unwrap_or(-3.0);
+        let base = crate::theme::corner_radius(corners[0].size, r.w, r.h);
+        let resolve = |c: &Corner| -> f32 {
+            let sz = if c.size == same {
+                base
+            } else {
+                crate::theme::corner_radius(c.size, r.w, r.h)
+            };
+            sz.min(cap)
+        };
+        let corner = [
+            resolve(&corners[0]),
+            resolve(&corners[1]),
+            resolve(&corners[2]),
+            resolve(&corners[3]),
+        ];
+        let half = [r.w * 0.5, r.h * 0.5];
+        let centre = [r.x + half[0], r.y + half[1]];
+        Some((r, corner, half, centre))
+    }
+
+    /// Whether an open weld (§2.10) is both this call's OWN silhouette —
+    /// same rect, same corners, same bits a plain [`ring`](Self::ring)
+    /// would weld onto — and bound to a GLASS run, so
+    /// [`ring_grad`](Self::ring_grad) may join the same one-record
+    /// silhouette a solid ring already does (K3b's second bounded edge
+    /// case).
+    ///
+    /// `Frost` claims no flag of its own on the record (§3.3: "a frost
+    /// claims no bit here"), so the only place that still says "this bed
+    /// is glass" is the RUN it rides — and that is only readable while
+    /// `bed.runs == self.runs.len()` still guarantees the last run is
+    /// the one the weld was opened on, the same guarantee `shape_verts`'
+    /// own `fits` check makes before it looks at anything else.
+    ///
+    /// Returns the snapped rect and resolved corner radii on a match, so
+    /// the caller does not resolve them twice.
+    fn open_glass_weld(&self, r: Rect, c: &[Corner; 4]) -> Option<(Rect, [f32; 4])> {
+        let bed = self.weld.as_ref()?;
+        if bed.verts != self.verts.len() || bed.runs != self.runs.len() {
+            return None;
+        }
+        let (r, corner, half, centre) = self.box_silhouette(r, c)?;
+        let mut bits = 0u32;
+        for (i, corner) in c.iter().enumerate() {
+            bits |= (corner.style as u32) << (2 * i as u32);
+        }
+        bits |= ShapeKind::Box.code() << Shape::KIND_SHIFT;
+        if bed.centre != centre || bed.half != half || bed.corner != corner || bed.bits != bits {
+            return None;
+        }
+        let on_glass = matches!(
+            self.runs.last().and_then(|run| run.image),
+            Some(img) if is_shape_glass(img)
+        );
+        on_glass.then_some((r, corner))
+    }
+
     /// [`ring`](Self::ring)'s ring, coloured by a two-stop gradient
     /// projected along `dir`.
     ///
@@ -2308,7 +2432,8 @@ impl DrawList {
     /// through this one would move every existing frame's vertices by an
     /// ulp for no picture.
     ///
-    /// # This one has no vector lane, and that is stated, not forgotten
+    /// # This one has no vector lane of its own, and that is stated, not
+    /// forgotten
     ///
     /// [`ring`](Self::ring) branches on `self.vector` and hands the stroke
     /// to `shape_verts`; this does not, and cannot yet. A shape record
@@ -2319,20 +2444,42 @@ impl DrawList {
     /// the theme wrote, so a gradient ring takes it whichever way
     /// `render.vector` is set.
     ///
-    /// Two consequences, both bounded and neither reaching the shipping
-    /// picture, `render.vector = false` being the default it goes down
-    /// behind. With the lane ON, a gradient-edged surface does not WELD:
-    /// its bed writes a fill-only record and the ring lays a strip over
-    /// it, so that silhouette's outer edge blends twice — the dark rim R4
-    /// names, which the flat ring is welded precisely to avoid. And the
-    /// band is tessellated, so it is the one edge on the frame without the
-    /// lane's analytic coverage.
-    ///
     /// Widening the record to a stop pair is K4's business, not a merge's:
     /// it is a change to the shape record itself and to `fs_shape`, on
     /// the far side of a repository boundary, and it wants deciding
     /// together with the NAMED `edge.gradient` slot the theme engine still
-    /// bakes no stops for.
+    /// bakes no stops for. **That stays bounded and unfixed here** for a
+    /// gradient ring over an ordinary (non-glass) bed: its fill-only
+    /// record and this ring's own strip are still two coverages on one
+    /// outer edge, and closing that in general needs the record change
+    /// above.
+    ///
+    /// **A GLASS rung is narrower, and does not need that change (K3b).**
+    /// A frosted bed already asks `ring`/`ring_fill` to WELD onto it
+    /// (§2.10, §3.3), and the reason a solid border can join that one
+    /// record — one uniform `stroke_c` — is exactly the reason a
+    /// two-stop gradient cannot. But the record's OUTER antialiased edge
+    /// (`coverage(d, 1.0)` in `fs_shape`/`fs_shape_glass`) is a pure
+    /// function of the record's own `half`/`corner`, computed at every
+    /// fragment regardless of which vertices happen to cover it — it
+    /// does not care whether the pixels over the band are one flat
+    /// colour or ten. So when there IS an open glass weld with this
+    /// call's own silhouette (checked by [`DrawList::open_glass_weld`]),
+    /// this welds a SOLID anchor (the two stops' own midpoint) into that
+    /// SAME record — one edge, the ordinary weld every solid ring gets —
+    /// and then paints the true two-stop gradient back in as a second,
+    /// tessellated pass, INSET by [`AA_PAD`] from both the record's outer
+    /// edge and its inner (stroke/fill) edge so the second pass never
+    /// overlaps either coverage ramp: away from those two ~1px fringes
+    /// the record's own coverage is already 1, so painting over it is an
+    /// ordinary composite, not a second blend of the same partial pixel.
+    /// The cost is that the outermost and innermost pixel of the border
+    /// reads the anchor colour rather than the true gradient value there
+    /// — bounded, and the same order of approximation `glass_fill`'s own
+    /// fractional depth already accepts. A border too thin to leave any
+    /// interior past both insets (`stroke <= 2 · AA_PAD`) skips the
+    /// second pass entirely and stays the flat anchor, which is still
+    /// welded and still rim-free.
     pub fn ring_grad(
         &mut self,
         r: Rect,
@@ -2358,17 +2505,79 @@ impl DrawList {
         if t <= 0.0 {
             return;
         }
-        let inner_r = Rect::new(
-            r.x + t,
-            r.y + t,
-            (r.w - 2.0 * t).max(0.0),
-            (r.h - 2.0 * t).max(0.0),
-        );
-        let ci = [c[0].inset(t), c[1].inset(t), c[2].inset(t), c[3].inset(t)];
+        // K3b's second bounded edge case, closed for the glass rung: see
+        // the doc above `open_glass_weld` welds an anchor colour into
+        // the SAME record an open glass bed offers, so the true gradient
+        // (painted back in below, inset from both its edges) never
+        // shares an antialiased boundary with a second record.
+        let glass = self.vector.then(|| self.open_glass_weld(r, c)).flatten();
+        let (outer_r, outer_c, inner_r, inner_c) = if let Some((gr, gc)) = glass {
+            let anchor = lerp(near, far, 0.5);
+            let before = self.shapes.len();
+            self.shape_verts(&ShapeSpec {
+                rect: r,
+                corners: *c,
+                kind: ShapeKind::Box,
+                fill: None,
+                stroke: Some((t, anchor)),
+                glass: None,
+                soft: None,
+            });
+            debug_assert_eq!(
+                self.shapes.len(),
+                before,
+                "ring_grad's own weld pre-check disagreed with shape_verts' fits: \
+                 the anchor wrote a second record instead of joining the bed"
+            );
+            let cap = (gr.w.min(gr.h) * 0.5).max(0.0);
+            let stroke_w = if self.warp <= 1 { t.round().max(1.0) } else { t }.min(cap);
+            let pad = (stroke_w - 2.0 * AA_PAD).max(0.0);
+            if pad <= 0.0 {
+                // No interior survives both insets: the anchor already
+                // welded above stands for the whole band, rim-free.
+                return;
+            }
+            let gcorner = |i: usize| Corner { style: c[i].style, size: gc[i] };
+            let outer_r = Rect::new(
+                gr.x + AA_PAD,
+                gr.y + AA_PAD,
+                (gr.w - 2.0 * AA_PAD).max(0.0),
+                (gr.h - 2.0 * AA_PAD).max(0.0),
+            );
+            let outer_c = [
+                gcorner(0).inset(AA_PAD),
+                gcorner(1).inset(AA_PAD),
+                gcorner(2).inset(AA_PAD),
+                gcorner(3).inset(AA_PAD),
+            ];
+            let inset_in = stroke_w - AA_PAD;
+            let inner_r = Rect::new(
+                gr.x + inset_in,
+                gr.y + inset_in,
+                (gr.w - 2.0 * inset_in).max(0.0),
+                (gr.h - 2.0 * inset_in).max(0.0),
+            );
+            let inner_c = [
+                gcorner(0).inset(inset_in),
+                gcorner(1).inset(inset_in),
+                gcorner(2).inset(inset_in),
+                gcorner(3).inset(inset_in),
+            ];
+            (outer_r, outer_c, inner_r, inner_c)
+        } else {
+            let inner_r = Rect::new(
+                r.x + t,
+                r.y + t,
+                (r.w - 2.0 * t).max(0.0),
+                (r.h - 2.0 * t).max(0.0),
+            );
+            let ci = [c[0].inset(t), c[1].inset(t), c[2].inset(t), c[3].inset(t)];
+            (r, *c, inner_r, ci)
+        };
         let mut outer = std::mem::take(&mut self.scratch_a);
         let mut inner = std::mem::take(&mut self.scratch_b);
-        ring_points(r, c, segments, &mut outer);
-        ring_points(inner_r, &ci, segments, &mut inner);
+        ring_points(outer_r, &outer_c, segments, &mut outer);
+        ring_points(inner_r, &inner_c, segments, &mut inner);
         debug_assert_eq!(outer.len(), inner.len());
         // The rect's own projected extent, from its four corners: the two
         // extremes of an axis-aligned box under a linear projection are two
@@ -2731,7 +2940,14 @@ impl DrawList {
             arc_half,
             arc_dir,
             _pad: 0.0,
-            tint: s.glass.map_or([0.0; 4], |g| g.tint.to_array()),
+            // The RECORD carries the BAND's tint, not necessarily the
+            // layer's own — see `Frost::band_tint`. Every caller but
+            // `glass_fill`'s fractional path leaves it unset, and the
+            // record ends up with `g.tint` exactly as before K3c. The
+            // CORE quad above reads `g.tint` directly and never this
+            // field: it is artifact-free by construction (§K3c) and
+            // has nothing to substitute.
+            tint: s.glass.map_or([0.0; 4], |g| g.band_tint.unwrap_or(g.tint).to_array()),
         });
         // The vertex colour is the fill's — or the stroke's when there
         // is no fill, so §2.10's mix starts from the band's own colour
@@ -3320,26 +3536,41 @@ impl DrawList {
         // than a true three-way mix would allow, which is invisible next to
         // the blur it buys. One layer when the depth lands on a rung.
         //
-        // ON THE VECTOR LANE THIS IS WHERE A SECOND EDGE SURVIVES A
-        // FROST — `ring_grad` is the other survivor on the lane, for a
-        // reason of its own, and says so at its own door. Worth naming
-        // here rather than discovering there: two
-        // rungs are two runs and two records, so their outer boundaries
-        // blend twice, and the excess is the same `c·(1 − c)·a·b` R4
-        // names — with `b` the UPPER rung's alpha, which is the
-        // fraction itself. It vanishes at both ends (a depth on a rung
-        // is one record) and peaks in between, well under the tint's
-        // own alpha; closing it would need one fragment sampling two
-        // targets, which is a descriptor-layout change for every
-        // pipeline in the renderer. Measured, stated, left.
+        // ON THE VECTOR LANE THIS USED TO BE WHERE A SECOND EDGE SURVIVED
+        // A FROST (K3c). `ring_grad` is still the other survivor on the
+        // lane, for a reason of its own, and says so at its own door —
+        // that one needs a wider record and a renderer change, and stays
+        // down. THIS one did not: two rungs are still two runs and two
+        // records (one pyramid target per run, §K3b), but a record's
+        // OUTER EDGE is the BAND, not the core, and the band's tint is
+        // `Frost::band_tint` now — a field the core never reads. So the
+        // core keeps blending both rungs (exact, since its coverage is 1
+        // throughout and two sequential blends of a constant alpha are
+        // not a double count), and the band is given to ONE rung only:
+        // the lower rung's band is silenced (alpha 0, its core still
+        // shows), the upper rung's band carries the two rungs' COMBINED
+        // alpha `a1 + a2 − a1·a2` — the standard over-composite of two
+        // fully-covering layers, which is exactly what one coverage
+        // evaluation is supposed to fold in. Closing the CORE the same
+        // way — one fragment sampling two pyramid targets — is still the
+        // renderer's, and still not this repository's; see
+        // `Frost::band_tint`.
         let lo = depth.floor().clamp(1.0, 3.0);
         let frac = depth - lo;
         let two = frac > 0.01 && lo < 3.0;
-        self.glass_layer(r, c, segments, lo as u8, tint, !two);
         if two {
+            let a1 = tint.a;
+            let a2 = a1 * frac;
+            let mut lower_band = tint;
+            lower_band.a = 0.0;
             let mut t2 = tint;
-            t2.a *= frac;
-            self.glass_layer(r, c, segments, lo as u8 + 1, t2, true);
+            t2.a = a2;
+            let mut upper_band = tint;
+            upper_band.a = a1 + a2 - a1 * a2;
+            self.glass_layer(r, c, segments, lo as u8, tint, false, Some(lower_band));
+            self.glass_layer(r, c, segments, lo as u8 + 1, t2, true, Some(upper_band));
+        } else {
+            self.glass_layer(r, c, segments, lo as u8, tint, true, None);
         }
     }
 
@@ -3351,6 +3582,13 @@ impl DrawList {
     /// and only the TOP layer ever is: a wash lies over all the frost
     /// there is, so an empty bed under the upper rung would be six
     /// vertices and a run that can never be given a colour.
+    ///
+    /// `band_tint` is [`Frost::band_tint`] passed straight through —
+    /// `None` off a whole-rung depth, where the record's band is still
+    /// exactly this layer's `tint`. The tessellated fan reads neither:
+    /// it has no record to carry a second colour on and no double-edge
+    /// defect to answer (§K3c on `glass_fill`), so it stays the shipped
+    /// picture regardless.
     fn glass_layer(
         &mut self,
         r: Rect,
@@ -3359,6 +3597,7 @@ impl DrawList {
         rank: u8,
         tint: Color,
         bed: bool,
+        band_tint: Option<Color>,
     ) {
         if self.vector {
             self.shape_verts(&ShapeSpec {
@@ -3371,7 +3610,7 @@ impl DrawList {
                 // to a geometry only this call knows.
                 fill: bed.then_some(Color::TRANSPARENT),
                 stroke: None,
-                glass: Some(Frost { rank, tint }),
+                glass: Some(Frost { rank, tint, band_tint }),
                 soft: None,
             });
         } else {
@@ -6360,8 +6599,6 @@ mod tests {
         let dl = frosted(1.5, true, true, true);
         assert_eq!(dl.shape_len(), 2, "the frosts merged or multiplied");
         let (lo, hi) = (dl.shapes()[0], dl.shapes()[1]);
-        assert_eq!(lo.tint, frost().to_array());
-        assert_eq!(hi.tint[3], frost().a * 0.5, "the upper rung is not the fraction");
         // The lower layer carries no wash and no border: they welded
         // into the upper one, which is the one drawn last.
         assert_eq!(lo.flags & Shape::STROKE, 0);
@@ -6378,6 +6615,42 @@ mod tests {
             ],
             "the two rungs did not stack in order"
         );
+    }
+
+    /// **K3c.** Two rungs, two records — the renderer still binds one
+    /// pyramid target per run, so that half of the split stays — but
+    /// only ONE of the two records may carry a BAND, or the silhouette's
+    /// shared outer edge blends twice (`c·(1 − c)·a·b`, R4 by another
+    /// name). The lower rung's record is silenced at the band (its own
+    /// core, drawn straight with no coverage ramp, is unaffected and
+    /// still carries the interpolation); the upper rung's band carries
+    /// the two rungs' COMBINED alpha, the standard over-composite of two
+    /// fully-covering layers, so the one coverage evaluation that
+    /// survives folds in what both rungs would have contributed.
+    #[test]
+    fn a_fractional_depth_blends_its_band_once() {
+        let dl = frosted(1.5, true, true, true);
+        let (lo, hi) = (dl.shapes()[0], dl.shapes()[1]);
+        let a1 = frost().a;
+        let a2 = a1 * 0.5;
+        let combined = a1 + a2 - a1 * a2;
+        assert_eq!(lo.tint[3], 0.0, "the lower rung still wrote a band");
+        assert_eq!(lo.tint[..3], frost().to_array()[..3], "the silenced band changed hue");
+        assert!(
+            (hi.tint[3] - combined).abs() < 1e-6,
+            "the upper band is not the two rungs combined: {} vs {combined}",
+            hi.tint[3]
+        );
+        // The CORE is untouched by any of this: it is not a coverage
+        // ramp (`cov` is 1 throughout it), so two sequential blends of a
+        // constant alpha are exact and the interpolation between rungs
+        // still lives there, at the fraction alone. Vertex 0 is the
+        // lower rung's own core (unsplit from its band, §K3b); vertex 30
+        // is the upper rung's, right after the lower rung's core (6) and
+        // band strips (`FRAME - 6`, no paint quad — the lower rung's bed
+        // is `false`).
+        assert!(dl.verts[..6].iter().all(|v| v.color == frost().to_array()));
+        assert!((dl.verts[30].color[3] - a2).abs() < 1e-6, "the upper core lost the fraction");
     }
 
     /// A frosted bed with no wash over it costs nothing: the quad is in
@@ -6504,6 +6777,124 @@ mod tests {
         let (old, new) = (scene(false), scene(true));
         assert_eq!(dump(&old), dump(&new));
         assert_ne!(old.verts.len(), new.verts.len());
+    }
+
+    /// **K3b's second bounded edge case, closed for the glass rung.** A
+    /// gradient border landing on an open glass bed welds into the SAME
+    /// record a solid border would (§2.10) — one silhouette, one
+    /// antialiased outer edge — instead of opening a second one the way
+    /// `ring_grad` used to unconditionally. The record's own band can
+    /// only be ONE colour (`stroke_c`), so it takes the two stops'
+    /// midpoint; the true gradient still shows, painted back in by a
+    /// second pass.
+    #[test]
+    fn a_gradient_border_welds_onto_an_open_glass_bed() {
+        let mut dl = DrawList::new();
+        dl.set_vector(true);
+        let r = Rect::new(10.0, 20.0, 200.0, 100.0);
+        let c = [Corner::round(8.0); 4];
+        let near = Color::rgb8(10, 200, 30);
+        let far = Color::rgb8(250, 40, 90);
+        dl.glass_fill(r, &c, 6, 2.0, frost());
+        dl.ring_fill(r, &c, 6, wash());
+        let before = dl.verts.len();
+        dl.ring_grad(r, &c, 6, 6.0, near, far, [1.0, 0.0]);
+        assert_eq!(dl.shape_len(), 1, "the gradient opened a second record");
+        let rec = dl.shapes()[0];
+        assert_eq!(rec.flags & Shape::STROKE, Shape::STROKE);
+        assert_eq!(rec.flags & Shape::FILL, Shape::FILL, "the wash's weld was lost");
+        let anchor = lerp(near, far, 0.5).to_array();
+        assert_eq!(rec.stroke_c, anchor, "the welded band is not the two stops' midpoint");
+        // The true gradient still shows: everything `ring_grad` itself
+        // added — the frost's core and the wash's own quads are already
+        // in `before` and excluded — spans close to BOTH stops. It is
+        // inset by `AA_PAD` from the rect's true extreme corners (see
+        // `the_gradient_overlay_stays_inset_...` below), so it never
+        // reaches `near`/`far` bit for bit, but it spans far enough past
+        // the anchor's own midpoint (0.51 on the red channel here) that
+        // a flattened, anchor-only band could not have produced either
+        // reading.
+        let overlay = &dl.verts[before..];
+        assert!(!overlay.is_empty(), "no overlay pass at all");
+        let reds = overlay.iter().map(|v| v.color[0]);
+        let lo = reds.clone().fold(f32::INFINITY, f32::min);
+        let hi = reds.fold(f32::NEG_INFINITY, f32::max);
+        assert!(lo < 0.1, "nothing reads close to the near stop: min red {lo}");
+        assert!(hi > 0.9, "nothing reads close to the far stop: max red {hi}");
+    }
+
+    /// The overlay's own hard edges never sit where the welded record's
+    /// analytic coverage ramp does: every vertex the second pass writes
+    /// stays at least `AA_PAD` in from the TRUE outer silhouette — the
+    /// margin that keeps `c·(1 − c)·a·b` from ever having two partial
+    /// coverages to multiply at the same pixel.
+    #[test]
+    fn the_gradient_overlay_stays_inset_from_the_welded_record_s_outer_edge() {
+        let mut dl = DrawList::new();
+        dl.set_vector(true);
+        let r = Rect::new(10.0, 20.0, 200.0, 100.0);
+        let c = [Corner::SQUARE; 4];
+        dl.glass_fill(r, &c, 6, 2.0, frost());
+        dl.ring_fill(r, &c, 6, wash());
+        let before = dl.verts.len();
+        dl.ring_grad(r, &c, 6, 6.0, Color::rgb8(0, 0, 0), Color::rgb8(255, 255, 255), [1.0, 0.0]);
+        let overlay: Vec<[f32; 2]> = dl.verts[before..].iter().map(|v| v.pos).collect();
+        assert!(!overlay.is_empty(), "no overlay pass at all");
+        for p in &overlay {
+            assert!(p[0] >= r.x + AA_PAD - 1e-3, "{p:?} reaches the left edge");
+            assert!(p[0] <= r.right() - AA_PAD + 1e-3, "{p:?} reaches the right edge");
+            assert!(p[1] >= r.y + AA_PAD - 1e-3, "{p:?} reaches the top edge");
+            assert!(p[1] <= r.bottom() - AA_PAD + 1e-3, "{p:?} reaches the bottom edge");
+        }
+    }
+
+    /// A border too thin to leave any interior once BOTH insets are
+    /// taken out (`stroke <= 2 · AA_PAD`) skips the second pass and
+    /// stays the welded anchor for its whole width — rim-free either
+    /// way, since nothing draws a second boundary at all.
+    #[test]
+    fn a_hairline_gradient_border_still_welds_with_no_room_for_the_overlay() {
+        let mut dl = DrawList::new();
+        dl.set_vector(true);
+        let r = Rect::new(10.0, 20.0, 200.0, 100.0);
+        let c = [Corner::round(8.0); 4];
+        dl.glass_fill(r, &c, 6, 2.0, frost());
+        dl.ring_fill(r, &c, 6, wash());
+        let before = dl.verts.len();
+        dl.ring_grad(r, &c, 6, 1.0, Color::rgb8(10, 200, 30), Color::rgb8(250, 40, 90), [1.0, 0.0]);
+        assert_eq!(dl.shape_len(), 1, "the hairline border opened a second record");
+        assert_eq!(before, dl.verts.len(), "a hairline overlay drew geometry it has no room for");
+    }
+
+    /// Off a glass bed — no wash just drawn, no bed at all — a gradient
+    /// ring is UNCHANGED: still tessellated, still no record, exactly
+    /// the bounded cost `ring_grad`'s own doc already named for the
+    /// general case. Only a glass rung closes it.
+    #[test]
+    fn a_gradient_ring_with_no_open_glass_bed_is_untouched() {
+        let mut dl = DrawList::new();
+        dl.set_vector(true);
+        let r = Rect::new(10.0, 20.0, 200.0, 100.0);
+        let c = [Corner::round(8.0); 4];
+        dl.ring_grad(r, &c, 6, 6.0, Color::rgb8(10, 200, 30), Color::rgb8(250, 40, 90), [1.0, 0.0]);
+        assert_eq!(dl.shape_len(), 0, "a bare gradient ring wrote a record");
+    }
+
+    /// An ORDINARY bed (a plain wash, no frost under it) stays exactly
+    /// the known bounded cost too: this fix is scoped to the glass
+    /// rung, not to every welded surface, so a non-glass weld must not
+    /// start absorbing a gradient border it was never asked to.
+    #[test]
+    fn a_gradient_ring_over_an_ordinary_bed_stays_the_known_bounded_cost() {
+        let mut dl = DrawList::new();
+        dl.set_vector(true);
+        let r = Rect::new(10.0, 20.0, 200.0, 100.0);
+        let c = [Corner::round(8.0); 4];
+        dl.ring_fill(r, &c, 6, wash());
+        let before = dl.shape_len();
+        assert_eq!(before, 1, "the ordinary bed did not even write its own record");
+        dl.ring_grad(r, &c, 6, 6.0, Color::rgb8(10, 200, 30), Color::rgb8(250, 40, 90), [1.0, 0.0]);
+        assert_eq!(dl.shape_len(), before, "a non-glass bed welded — out of this fix's scope");
     }
 
     // -----------------------------------------------------------------
