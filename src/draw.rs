@@ -987,7 +987,28 @@ impl GlowProfile {
     }
 
     /// The alpha at distance fraction `f`, given the caller's own.
+    ///
+    /// EXACTLY 0.0 AT THE RIM, BY THE VERTEX AND NOT BY THE TEXTURE. The
+    /// mask sprite's own edge texel is baked to 0.0 (`bake_masks`'s own
+    /// `d >= r` branch), and the ring at `f = 1.0` samples exactly that
+    /// texel (`v_at`'s own `f >= 1.0 => v0` branch) — so in principle the
+    /// additive blend already lands on nothing past the reach. In
+    /// practice the GPU's own bilinear filter reads a NEIGHBOURHOOD of
+    /// texels around the sample point, not one, and this sprite shares
+    /// an atlas with everything else the font system packs — a rim
+    /// sampled a half-texel short of the edge, or packed with no margin
+    /// past it, blends in whatever sits next to it in the shelf. Before
+    /// this the fade past the reach was carried ENTIRELY by that
+    /// sampling being exact; now the vertex alpha the caller multiplies
+    /// against is *itself* zero at the rim, so even a mis-sampled
+    /// texture is multiplied against nothing and still lands on nothing.
+    /// The two ARE the same picture inside the reach — this changes
+    /// nothing `f < 1.0` was already answering — and are no longer only
+    /// hopefully the same picture at it.
     fn alpha_at(&self, f: f32, alpha: f32) -> f32 {
+        if f >= 1.0 {
+            return 0.0;
+        }
         if !self.lifts() {
             return alpha;
         }
@@ -5090,6 +5111,10 @@ mod tests {
         let su = u0 + (u1 - u0) * (32.0 / 64.0);
         let vi = v0 + (v1 - v0) * (31.0 / 64.0);
         let col = color.to_array();
+        // The rim's own two corners carry ZERO alpha, not `color`'s —
+        // `alpha_at`'s own `f >= 1.0` branch, so this transcript still
+        // matches the emitter it is proving has not otherwise moved.
+        let rim = [color.r, color.g, color.b, 0.0];
         let n = inner.len().min(outer.len());
         for i in 0..n {
             let j = (i + 1) % n;
@@ -5097,7 +5122,7 @@ mod tests {
                 Some(ADD_ATLAS),
                 [inner[i], inner[j], outer[j], outer[i]],
                 [[su, vi], [su, vi], [su, v0], [su, v0]],
-                [col; 4],
+                [col, col, rim, rim],
             );
         }
     }
@@ -5112,6 +5137,16 @@ mod tests {
     /// screen through this one call. Compared over the corner styles
     /// separately: the profile's arithmetic runs per band boundary, and a
     /// square corner, a chamfer and an arc take different numbers of them.
+    ///
+    /// [`the_single_band_emitter`]'s rim carries zero alpha now
+    /// (2026-08-24), the one deliberate exception to "bit for bit": the
+    /// owner's condition guards against an ACCIDENTAL move, not against
+    /// this one, named one — every glow class, halo included, must reach
+    /// exactly the background past its own reach, and that guarantee has
+    /// to live in the vertex the emitter hands the rasteriser, not only
+    /// in the mask texture's own zero texel (`alpha_at`'s own doc says
+    /// why). The transcript moved on purpose, together with the code it
+    /// is proving has not moved any OTHER way.
     #[test]
     fn the_shaped_emitter_still_draws_the_unshaped_halo() {
         let uv = FontSystem::mask_soft_uv();
@@ -5415,12 +5450,18 @@ mod tests {
         }
     }
 
-    /// THE AURA IS BRIGHTER THAN THE LIGHT IT SITS IN, AND IT LETS GO
-    /// WHERE THE THEME SAYS — measured on the picture, not on the rings.
+    /// THE AURA IS BRIGHTER THAN THE LIGHT IT SITS IN, IT LETS GO WHERE
+    /// THE THEME SAYS, AND IT REACHES EXACTLY 0 AT THE RIM — measured on
+    /// the picture, not on the rings.
     ///
     /// A relation, as everywhere here: the alpha at the glass is above
     /// the alpha the caller asked for, the alpha anywhere past the reach
-    /// is exactly it, and nothing anywhere leaves 0..1 — a blend factor
+    /// and short of the final band is exactly it, the final band ramps
+    /// that down to exactly 0 at the rim (`alpha_at`'s own `f >= 1.0`
+    /// branch — the vertex is zero there BY CONSTRUCTION, not by the
+    /// texture sample landing on the mask's own zero texel; see that
+    /// function's doc for why the vertex has to carry this and not only
+    /// the texture), and nothing anywhere leaves 0..1 — a blend factor
     /// outside that range is the undefined output the master warns about
     /// at `glow.panel_edge.color`.
     ///
@@ -5458,6 +5499,12 @@ mod tests {
                         at(0.0),
                         col.a
                     );
+                    // The final band's own start: none of `reach`'s three
+                    // values here ever falls past it, so `stops()` never
+                    // inserts an extra ring inside this last cut and the
+                    // even grid's own last boundary is exactly it.
+                    let last_band_start = (bands - 1) as f32 / bands as f32;
+                    assert!(reach < last_band_start - 1e-3, "test assumption: {p:?}");
                     // 401 samples across the whole reach, so the strip
                     // between any two rings is walked whatever the cut.
                     let mut last = at(0.0);
@@ -5466,8 +5513,9 @@ mod tests {
                         let a = at(f);
                         assert!((0.0..=1.0).contains(&a), "alpha {a} left 0..1 at f={f}, {p:?}");
                         // "Ramps from tube_aura at the glass to 1.0 here
-                        // and stays there" — a ramp that ever turns back
-                        // up is a second, brighter band nobody named.
+                        // and stays there, then to 0 at the rim" — a ramp
+                        // that ever turns back up is a second, brighter
+                        // band nobody named.
                         assert!(
                             a <= last + 1e-6,
                             "the aura brightened again at {:.1}% of the radius: {a} after \
@@ -5475,7 +5523,7 @@ mod tests {
                             f * 100.0
                         );
                         last = a;
-                        if f > reach + 1e-3 {
+                        if f > reach + 1e-3 && f < last_band_start - 1e-3 {
                             assert!(
                                 (a - col.a).abs() < 1e-6,
                                 "the aura was still lifting at {:.1}% of the radius, {:.1}% \
@@ -5493,8 +5541,28 @@ mod tests {
                                 reach * 100.0,
                                 col.a
                             );
+                        } else if f > last_band_start + 1e-3 {
+                            // The final band's own straight line from
+                            // `col.a` at its start to exactly 0 at the
+                            // rim — `alpha_ramp` linearly interpolates
+                            // between the two real vertices that bound
+                            // it, so the expected value is that same
+                            // line, not a second measurement of it.
+                            let want =
+                                col.a * (1.0 - (f - last_band_start) / (1.0 - last_band_start));
+                            assert!(
+                                (a - want).abs() < 1e-5,
+                                "the final band did not ramp straight to 0 at the rim: {a} vs \
+                                 {want} at {:.1}% of the radius, {p:?}",
+                                f * 100.0
+                            );
                         }
                     }
+                    assert!(
+                        at(1.0).abs() < 1e-6,
+                        "the rim must be exactly 0, not merely small: {} at {p:?}",
+                        at(1.0)
+                    );
                 }
             }
         }
