@@ -15,7 +15,7 @@
 
 use super::focus_ring;
 use super::tabs;
-use crate::access::{AccessInfo, Role};
+use crate::access::{AccessInfo, Role, States};
 use crate::draw::CornerStyle;
 use crate::focus::{Caps, FocusId};
 use crate::ui::Align;
@@ -194,6 +194,16 @@ pub fn draw(ctx: &mut Ctx, r: Rect, labels: &[&str], st: &StripState) -> Vec<Rec
 /// [`super::tabs::draw_focusable`] does it: the arrows move the choice
 /// INSIDE the control (`Caps::GREEDY_ARROWS`) and the ring is drawn
 /// around the chosen cell only when the chain says a ring is due.
+///
+/// The [`AccessInfo`] carries `with_index(st.active + 1, labels.len())`
+/// so a screen reader can announce "2 of 4" — the CHOSEN cell's place
+/// among its siblings, not the strip's own position in the Tab chain,
+/// which is a different number [`crate::focus::FocusCtl`] tracks on its
+/// own and this control never sees. And `States::SELECTED`, set
+/// unconditionally rather than read off anything: a tab strip's SHOWING
+/// cell can legitimately be absent, but a segmented control's whole
+/// point is that exactly one segment is always chosen, so there is no
+/// "unselected" case for this state to distinguish.
 pub fn draw_focusable(
     ctx: &mut Ctx,
     r: Rect,
@@ -207,7 +217,9 @@ pub fn draw_focusable(
             id,
             r,
             Caps::GREEDY_ARROWS,
-            AccessInfo::new(Role::RadioButton, active_label),
+            AccessInfo::new(Role::RadioButton, active_label)
+                .with_index(st.active as u32 + 1, labels.len() as u32)
+                .with_states(States::SELECTED),
         )
     });
     let cells = draw(ctx, r, labels, st);
@@ -221,6 +233,12 @@ pub fn draw_focusable(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::draw::DrawList;
+    use crate::focus::FocusCtl;
+    use crate::font::FontSystem;
+    use crate::pointer::Pointer;
+
     fn px(name: &str) -> f32 {
         crate::theme::resolved().px(crate::theme::id(name).unwrap())
     }
@@ -244,5 +262,63 @@ mod tests {
         // NEW in F2 §9: the role the 5.27 matrix already lends this
         // control, said out loud so a theme can move it.
         assert_eq!(word("segmented.role"), "button");
+    }
+
+    fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem, fc: &'a mut FocusCtl) -> Ctx<'a> {
+        Ctx {
+            access: None,
+            dl,
+            fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 0.0,
+            mouse: Pointer::new(-1.0, -1.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: Some(fc),
+            tips: None,
+        }
+    }
+
+    /// The one `FocusCtl::register` call `draw_focusable` makes carries
+    /// the CHOSEN cell's one-based position among its siblings — "2 of
+    /// 4", not the strip's own place in the Tab chain — and
+    /// `States::SELECTED` unconditionally, because unlike a tab strip's
+    /// SHOWING cell this control never has an unselected cell to
+    /// distinguish it from.
+    #[test]
+    fn draw_focusable_reports_the_active_cells_position_and_that_it_is_selected() {
+        let labels = ["ONE", "TWO", "THREE", "FOUR"];
+        let st = StripState::new(1); // second of four cells is active
+        let r = Rect::new(0.0, 0.0, 400.0, 40.0);
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        draw_focusable(&mut ctx(&mut dl, &mut fonts, &mut fc), r, &labels, &st, FocusId::of("seg"));
+        fc.begin_frame();
+        let (_, _, info) = fc.entries().next().expect("the strip registered one entry");
+        assert_eq!(info.index, Some((2, 4)));
+        assert!(info.states.contains(States::SELECTED));
+        assert_eq!(info.role, Role::RadioButton);
+        assert_eq!(info.name, "TWO");
+    }
+
+    /// A single-cell strip is still "1 of 1" and still selected — the
+    /// count is never assumed to be more than one, only read off
+    /// `labels.len()`.
+    #[test]
+    fn a_lone_cell_is_one_of_one() {
+        let labels = ["ONLY"];
+        let st = StripState::new(0);
+        let r = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        draw_focusable(&mut ctx(&mut dl, &mut fonts, &mut fc), r, &labels, &st, FocusId::of("seg"));
+        fc.begin_frame();
+        let (_, _, info) = fc.entries().next().expect("the strip registered one entry");
+        assert_eq!(info.index, Some((1, 1)));
+        assert!(info.states.contains(States::SELECTED));
     }
 }
