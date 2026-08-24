@@ -62,21 +62,6 @@
 //! real RGB gamut's own edge count, and a shape that cannot move when
 //! `v` does, because no lightness enters the computation anywhere.
 //!
-//! HDR LUMINANCE IS A SECOND, ADDITIONAL BAR, not a reinterpretation of
-//! the value bar above: the value bar keeps meaning SDR value, in every
-//! space, always. When `space` names an HDR ceiling
-//! (`GamutSpace::hdr_ceiling_nits`), `layout_with` hangs one more bar off
-//! the right of the value bar and narrows the field to make room —
-//! `Layout.luminance` is `None`, not merely undrawn, the rest of the time,
-//! so an SDR layout is byte-identical to the one before this control knew
-//! HDR existed. `Picker::colour_hdr` is what the bar's own axis reports:
-//! the chosen hue and saturation at `Picker::nits` of peak luminance
-//! against a `SDR_REFERENCE_NITS` (203 cd/m², ITU-R BT.2408) diffuse
-//! white, linear and UNCLAMPED — the same discipline
-//! `Color::from_oklch_unmapped` states for the extended-range escape
-//! hatch, because the caller's own scRGB/PQ output stage owns the clamp
-//! and this control does not get to guess it.
-//!
 //! WHY AN OBJECT AND NOT A PAGE OF SLIDERS. Until 2026-08-18 a colour in
 //! the theme editor was three sliders — brightness, saturation, hue —
 //! and thirteen colours were thirty-nine rows in which the one thing you
@@ -592,34 +577,20 @@ fn numbers(t: &str, name: &str) -> Option<(Vec<f32>, Option<f32>)> {
 
 // --------------------------------------------------------------- the space
 
-/// The active output space's own boundary and (when it applies) its HDR
-/// ceiling — a plain value the CALLER supplies, the same way `custom:
-/// &[Color]` and `id_of: impl Fn(Part) -> FocusId` already reach this
-/// control. This crate has no dependency on a host application's own
-/// notion of a colour space (`SpaceRange`, `ColorConf` and the like, in
-/// `nacelle-desktop`'s case); whatever those types resolve to becomes two
-/// numbers and a struct before it crosses into this one.
+/// The active output space's own boundary — a plain value the CALLER
+/// supplies, the same way `custom: &[Color]` and `id_of: impl Fn(Part) ->
+/// FocusId` already reach this control. This crate has no dependency on a
+/// host application's own notion of a colour space (`SpaceRange`,
+/// `ColorConf` and the like, in `nacelle-desktop`'s case); whatever those
+/// types resolve to becomes a struct before it crosses into this one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GamutSpace {
     /// The space's own primaries — what the gamut-boundary curve is
     /// measured against (`theme::color::Primaries`).
     pub primaries: theme::color::Primaries,
-    /// `Some(ceiling_nits)` when the caller's own space is HDR, and that
-    /// is the luminance bar's own top; `None` for SDR, and the bar does
-    /// not exist — `Layout.luminance` stays `None`, not merely undrawn.
-    pub hdr_ceiling_nits: Option<f32>,
 }
 
 // --------------------------------------------------------------- the model
-
-/// The reference white a picker's HDR gain is measured against: ITU-R
-/// BT.2408's diffuse-white / SDR-reference level, 203 cd/m² — the figure
-/// broadcast HDR pipelines calibrate "this looks like ordinary SDR white"
-/// against. A technical calibration constant and not a theme aesthetic
-/// (unlike [`GamutSpace::hdr_ceiling_nits`], which is `picker.hdr_nits`
-/// precisely because IT is one), so it stands here in Rust rather than in
-/// `[picker]`.
-pub const SDR_REFERENCE_NITS: f32 = 203.0;
 
 /// What the control holds between frames.
 ///
@@ -640,19 +611,12 @@ pub struct Picker {
     alpha: f32,
     /// Which notation the text side is written in.
     pub format: Format,
-    /// The HDR luminance bar's own axis, in cd/m² — independent of `hsv`,
-    /// the same way `hsv`'s three channels are independent of each other.
-    /// Meaningless whenever the caller's space is SDR (nothing reads it
-    /// then: `layout_with` draws no bar for it to answer), and NEVER
-    /// clamped to any particular ceiling here, because the ceiling is
-    /// `picker.hdr_nits` and this struct does not read the theme.
-    nits: f32,
 }
 
 impl Picker {
     /// A picker opened on a colour.
     pub fn of(c: Color) -> Picker {
-        let mut p = Picker { hsv: [0.0, 0.0, 0.0], alpha: 1.0, format: Format::Argb, nits: SDR_REFERENCE_NITS };
+        let mut p = Picker { hsv: [0.0, 0.0, 0.0], alpha: 1.0, format: Format::Argb };
         p.set_colour(c);
         p
     }
@@ -753,42 +717,6 @@ impl Picker {
         self.hsv[2] = 1.0 - fy.clamp(0.0, 1.0);
     }
 
-    /// The HDR luminance bar's handle, 0..1 from its top (`ceiling_nits`)
-    /// to its bottom (0 nits) — [`Picker::value_at`]'s own shape, read on
-    /// a different axis: nits instead of SDR value, and a ceiling the
-    /// CALLER states (`picker.hdr_nits`, read by the caller, not by this
-    /// struct) rather than a fixed 1.0.
-    pub fn luminance_at(&self, ceiling_nits: f32) -> f32 {
-        if ceiling_nits <= 0.0 {
-            return 1.0;
-        }
-        1.0 - (self.nits / ceiling_nits).clamp(0.0, 1.0)
-    }
-
-    /// A press or a drag along the luminance bar: nits from y, against
-    /// the same `ceiling_nits` its own handle position is read against —
-    /// the two must agree or a drag to the bar's own top would not land
-    /// on the ceiling it appears to be pointing at.
-    pub fn pick_luminance(&mut self, fy: f32, ceiling_nits: f32) {
-        self.nits = (1.0 - fy.clamp(0.0, 1.0)) * ceiling_nits.max(0.0);
-    }
-
-    /// The picked colour scaled to `self.nits` of peak luminance against
-    /// `ref_nits` of reference white ([`SDR_REFERENCE_NITS`] at every
-    /// call site this crate has), LINEAR and UNCLAMPED — the caller's own
-    /// scRGB/PQ output stage owns the clamp, same discipline
-    /// `Color::from_oklch_unmapped` already states for the extended-range
-    /// escape hatch (`theme::color`). Reuses `hsv_to_rgb` and `to_linear`
-    /// exactly as [`Picker::colour`] does and adds one multiplicative
-    /// gain step — the file's existing "decode on the way in" discipline,
-    /// not a parallel HDR colour law of its own.
-    pub fn colour_hdr(&self, ref_nits: f32) -> Color {
-        let (r, g, b) = hsv_to_rgb(self.hsv[0], self.hsv[1], self.hsv[2]);
-        let gain = self.nits / ref_nits.max(1e-6);
-        let lin = Color { r, g, b, a: self.alpha }.to_linear();
-        Color { r: lin.r * gain, g: lin.g * gain, b: lin.b * gain, a: lin.a }
-    }
-
     /// The colour as text, in the notation in force.
     pub fn text(&self) -> String {
         write(self.colour(), self.format)
@@ -851,15 +779,6 @@ pub struct Layout {
     /// The caller's own, and the cell that banks the current colour.
     pub custom: Vec<Rect>,
     pub add: Rect,
-    /// The HDR luminance bar, hung off the right of the value bar —
-    /// `Some` only when the caller's own space names an HDR ceiling
-    /// (`GamutSpace::hdr_ceiling_nits`). ABSENT, NOT MERELY UNDRAWN, the
-    /// rest of the time: an SDR layout never budgets width for this bar
-    /// and so never has to reclaim it, the same "a part that is drawn is
-    /// a part that can be reached" principle [`parts`] states, read
-    /// backwards — a part that does not exist claims no place in the Tab
-    /// chain either.
-    pub luminance: Option<Rect>,
 }
 
 /// What one part of the control answers to.
@@ -872,9 +791,6 @@ pub enum Part {
     Base(usize),
     Custom(usize),
     Add,
-    /// The HDR luminance bar — only ever produced by [`parts`] when
-    /// [`Layout::luminance`] is `Some`.
-    Luminance,
 }
 
 /// The numbers `[picker]` states, read once per call and passed around
@@ -893,10 +809,6 @@ struct Metrics {
     swatch_gap: f32,
     cols: usize,
     base_count: usize,
-    /// The HDR luminance bar's own width — read whether or not HDR is in
-    /// force, like every other number [`Metrics`] holds; whether it is
-    /// USED is `layout_with`'s question, not this one's.
-    luminance_w: f32,
 }
 
 impl Metrics {
@@ -913,7 +825,6 @@ impl Metrics {
         static COLS: OnceLock<TokenId> = OnceLock::new();
         static BASE_N: OnceLock<TokenId> = OnceLock::new();
         static PAD_X: OnceLock<TokenId> = OnceLock::new();
-        static LUMINANCE_W: OnceLock<TokenId> = OnceLock::new();
         let t = theme::resolved();
         Metrics {
             gap: t.px(tok(&GAP, "picker.gap")),
@@ -930,7 +841,6 @@ impl Metrics {
             // division by zero, and a theme is a file a person edits.
             cols: (t.px(tok(&COLS, "picker.swatch_cols")).round() as usize).max(1),
             base_count: offered(t.px(tok(&BASE_N, "picker.base_count"))),
-            luminance_w: t.px(tok(&LUMINANCE_W, "picker.luminance_w")),
         }
     }
 }
@@ -973,26 +883,28 @@ fn offered(wish: f32) -> usize {
 }
 
 /// How tall the control stands in a band `w` wide, offering `custom`
-/// colours of the caller's own, in the active output `space` (`None` for
-/// no colour management at all — see [`GamutSpace`]).
+/// colours of the caller's own.
 ///
 /// Asked BEFORE the row is laid out, and answered from the same numbers
 /// AND the same count the layout uses — a height that disagreed with the
 /// layout would leave the swatches drawn over the row below, and it would
 /// start disagreeing on the day somebody banked a ninth colour.
-pub fn height(w: f32, custom: usize, space: Option<GamutSpace>) -> f32 {
+pub fn height(w: f32, custom: usize) -> f32 {
     let m = Metrics::read();
-    layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), custom, space).1
+    layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), custom).1
 }
 
 /// Where everything stands inside `area`, for a picker offering `custom`
-/// colours of its own in the active output `space`.
-pub fn layout(area: Rect, custom: usize, space: Option<GamutSpace>) -> Layout {
+/// colours of its own. The active output space plays no part in the
+/// geometry any more — it did only while an HDR ceiling could reserve a
+/// second bar, and that bar is gone (2026-08-23); [`draw`] still takes a
+/// space, for the gamut-boundary triangle, which affects PAINT, not layout.
+pub fn layout(area: Rect, custom: usize) -> Layout {
     let m = Metrics::read();
-    layout_with(&m, area, custom, space).0
+    layout_with(&m, area, custom).0
 }
 
-fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>) -> (Layout, f32) {
+fn layout_with(m: &Metrics, area: Rect, custom: usize) -> (Layout, f32) {
     // NOTHING MAY LEAVE THE BAND, AND THE BAND IS THE ONLY NUMBER HERE
     // THAT IS NOT THE THEME'S. Every width below is the theme's wish
     // clamped by the room there is, in that order, because the two are
@@ -1005,25 +917,15 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>
     // 30 px the first ready-made cell stood 29.4 px outside.
     let band = area.w.max(0.0);
     let value_w = m.value_w.min(band);
-    let hdr_ceiling = space.and_then(|s| s.hdr_ceiling_nits);
-    // THE LUMINANCE BAR IS RESERVED ONLY WHEN HDR IS ACTIVE, and this is
-    // the one place that decision is made: `extra` is exactly zero in
-    // every other case, so `left_w`/`box_w`/`value` below are BYTE
-    // IDENTICAL to the layout before this control knew HDR existed —
-    // nothing widens or is left blank when HDR is off, the field only
-    // narrows when it turns on.
-    let luminance_w = if hdr_ceiling.is_some() { m.luminance_w.min(band) } else { 0.0 };
-    let extra = if hdr_ceiling.is_some() { luminance_w + m.gap } else { 0.0 };
-    let left_w = (band * m.field_w_frac).max(value_w + extra + m.gap).min(band);
+    let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
     // THE WHEEL IS A CIRCLE INSCRIBED IN THE SAME BOX THE OLD RECTANGULAR
     // FIELD FILLED, centred rather than stretched to it: a disk stretched
     // to a box that is not square would draw an ellipse, and an ellipse
     // is not a hue wheel, it is a hue wheel that has been sat on. The box
     // itself is unchanged — same width, same `m.field_h` — so nothing
     // downstream that reasons about the BOX (`right_h`, `strip_y`) has to
-    // change; only what is drawn inside it shrank to a square, and (in
-    // HDR) narrowed again to make room for the luminance bar.
-    let box_w = (left_w - m.gap - value_w - extra).max(0.0);
+    // change; only what is drawn inside it shrank to a square.
+    let box_w = (left_w - m.gap - value_w).max(0.0);
     let box_h = m.field_h;
     let diameter = box_w.min(box_h).max(0.0);
     let field = Rect::new(
@@ -1035,12 +937,7 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>
     // The bar is hung from the RIGHT of the left column rather than from
     // the field's edge. With room the two are the same point to the last
     // bit; without it, this one is still inside the band.
-    let value = Rect::new(area.x + left_w - value_w - extra, area.y, value_w, m.field_h);
-    // The luminance bar, hung off the RIGHT of the value bar in turn —
-    // `None` unless HDR asked for one, per [`Layout::luminance`]'s own
-    // "absent, not merely undrawn" contract.
-    let luminance =
-        hdr_ceiling.map(|_| Rect::new(value.right() + m.gap, area.y, luminance_w, m.field_h));
+    let value = Rect::new(area.x + left_w - value_w, area.y, value_w, m.field_h);
     let rw = (band - left_w - m.gap).max(0.0);
     let rx = (area.x + left_w + m.gap).min(area.x + band);
     let patch = Rect::new(rx, area.y, rw, m.patch_h);
@@ -1082,7 +979,7 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>
         m.row_h,
     );
     (
-        Layout { field, value, patch, format, text, base, custom: custom_rects, add, luminance },
+        Layout { field, value, patch, format, text, base, custom: custom_rects, add },
         text.bottom() - area.y,
     )
 }
@@ -1104,12 +1001,6 @@ fn layout_with(m: &Metrics, area: Rect, custom: usize, space: Option<GamutSpace>
 /// so it is a statement about reading and not about precedence.
 pub fn parts(l: &Layout) -> Vec<(Part, Rect)> {
     let mut out = vec![(Part::Field, l.field), (Part::Value, l.value)];
-    // Right beside the value bar it stands next to, and only when it
-    // exists at all — the "absent, not merely undrawn" contract
-    // [`Layout::luminance`] states held all the way to the Tab chain.
-    if let Some(r) = l.luminance {
-        out.push((Part::Luminance, r));
-    }
     out.extend(l.base.iter().enumerate().map(|(i, r)| (Part::Base(i), *r)));
     out.extend(l.custom.iter().enumerate().map(|(i, r)| (Part::Custom(i), *r)));
     out.push((Part::Add, l.add));
@@ -1362,28 +1253,6 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &Picker, custom: &[Color], space: Opti
         ctx,
         Rect::new(l.value.x, vy - hr_px, l.value.w, hr_px * 2.0),
     );
-
-    // ---- the HDR luminance bar, iff `layout_with` reserved one: the
-    // SAME hue/saturation ramp the value bar draws — nothing here asks
-    // the field's own colour to be pushed through `Picker::colour_hdr`'s
-    // unclamped linear gain for the sake of a decorative gradient this
-    // control cannot itself preview correctly (that value is what the
-    // CALLER reads off `Picker::colour_hdr`, not what this bar paints) —
-    // with the handle read against `sp.hdr_ceiling_nits` instead of
-    // against a fixed 1.0.
-    if let (Some(r), Some(ceiling)) = (l.luminance, space.and_then(|sp| sp.hdr_ceiling_nits)) {
-        ctx.dl.rect_grad(
-            r,
-            &[
-                (0.0, Color { r: hr, g: hg, b: hb, a: 1.0 }),
-                (1.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-            ],
-            std::f32::consts::FRAC_PI_2,
-        );
-        frame(ctx, r);
-        let ly = r.y + p.luminance_at(ceiling) * r.h;
-        handle(ctx, Rect::new(r.x, ly - hr_px, r.w, hr_px * 2.0));
-    }
 
     // ---- the patch, over the chequerboard so alpha is visible.
     checker(ctx, l.patch);
@@ -1789,7 +1658,7 @@ mod tests {
         let m = Metrics::read();
         for w in [520.0f32, 400.0, 300.0, 150.0] {
             let area = Rect::new(30.0, 40.0, w, 0.0);
-            let l = layout(area, 0, None);
+            let l = layout(area, 0);
             let band = area.w.max(0.0);
             let value_w = m.value_w.min(band);
             let left_w = (band * m.field_w_frac).max(value_w + m.gap).min(band);
@@ -1819,8 +1688,8 @@ mod tests {
         // Past a full row of banked colours the grid grows a row, which
         // is the case a height that ignored the count would get wrong.
         for custom in [0usize, 1, 7, 8, 17] {
-            let l = layout(area, custom, None);
-            let h = height(area.w, custom, None);
+            let l = layout(area, custom);
+            let h = height(area.w, custom);
             let low = l
                 .base
                 .iter()
@@ -1845,7 +1714,7 @@ mod tests {
         for custom in [0usize, 1, 7, 8, 17] {
             for w in [520.0f32, 400.0, 300.0, 260.0, 200.0, 150.0, 100.0, 60.0, 30.0, 20.0, 0.0] {
                 let area = Rect::new(30.0, 40.0, w, 0.0);
-                let l = layout(area, custom, None);
+                let l = layout(area, custom);
                 for (part, r) in parts(&l) {
                     assert!(
                         r.x >= area.x - 0.01 && r.right() <= area.x + area.w + 0.01,
@@ -1865,7 +1734,7 @@ mod tests {
                     "the patch runs past the band at width {w}"
                 );
                 approx(
-                    height(w, custom, None),
+                    height(w, custom),
                     parts(&l).iter().fold(area.y, |a, (_, r)| a.max(r.bottom())) - area.y,
                     0.51,
                     &format!("the reported height covers every part at width {w}"),
@@ -1902,7 +1771,7 @@ mod tests {
         let pad = Metrics::read().pad_x;
         // The band the settings window gives it, and comfortably below.
         for w in [520.0f32, 460.0, 400.0] {
-            let l = layout(Rect::new(0.0, 0.0, w, 0.0), 3, None);
+            let l = layout(Rect::new(0.0, 0.0, w, 0.0), 3);
             assert!(
                 l.text.w - pad * 2.0 >= need,
                 "the readout is {} px wide inside its padding at band {w}, \
@@ -1915,7 +1784,7 @@ mod tests {
             .iter()
             .map(|f| readout_px(&mut fonts, f.word()))
             .fold(0.0f32, f32::max);
-        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3, None);
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3);
         assert!(
             l.format.w - pad * 2.0 >= word,
             "the notation's plate is {} px inside its padding, the longest word {word} px",
@@ -1934,7 +1803,7 @@ mod tests {
         assert!(pad > 0.0, "the master gives the plates an inset");
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::recording();
-        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 2, None);
+        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 2);
         let p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
         draw(&mut probe(&mut dl, &mut fonts), &l, &p, &[Color::WHITE, Color::BLACK], None);
         let runs: Vec<[f32; 2]> = dl
@@ -1966,7 +1835,7 @@ mod tests {
         assert!(asked > 0, "the master declares a grid");
         let mut m = Metrics::read();
         m.base_count = asked;
-        let (l, _) = layout_with(&m, Rect::new(0.0, 0.0, 520.0, 0.0), 0, None);
+        let (l, _) = layout_with(&m, Rect::new(0.0, 0.0, 520.0, 0.0), 0);
         assert_eq!(
             l.base.len(),
             base_colours().len(),
@@ -2007,7 +1876,7 @@ mod tests {
         //! with every assertion in this file passing.
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::recording();
-        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0, None);
+        let l = layout(Rect::new(30.0, 40.0, 520.0, 0.0), 0);
         let p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
         let hue_stops = theme::resolved().px(theme::id("picker.hue_stops").expect("declared"));
         let (wedges, rings) = wheel_tessellation((hue_stops.round() as usize).clamp(2, 64));
@@ -2124,7 +1993,7 @@ mod tests {
 
     #[test]
     fn every_part_of_the_control_answers_for_itself() {
-        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3, None);
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 3);
         let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let (x, y) = mid(l.field);
         assert_eq!(hit(&l, x, y), Some(Part::Field));
@@ -2201,54 +2070,6 @@ mod tests {
     }
 
     #[test]
-    fn an_sdr_hdr_ceiling_narrows_the_field_and_gates_the_luminance_part() {
-        //! Section 4's own contract: an SDR layout (`space` with no HDR
-        //! ceiling, or `None` entirely) is BYTE IDENTICAL to the layout
-        //! before this control knew HDR existed — nothing widens or is
-        //! left blank — and the field only narrows, with a
-        //! [`Part::Luminance`] appearing in [`parts`], once
-        //! `GamutSpace::hdr_ceiling_nits` is `Some`.
-        // A band narrow enough that the field's own WIDTH is what limits
-        // its diameter (`box_w < picker.field_h`) rather than its fixed
-        // height — at the full 520 px band the field is height-bound and
-        // reserving the luminance bar's width would not move it at all,
-        // which would make this test true for the wrong reason.
-        let area = Rect::new(30.0, 40.0, 250.0, 0.0);
-        let sdr = layout(area, 2, None);
-        let sdr_with_space = layout(
-            area,
-            2,
-            Some(GamutSpace { primaries: theme::color::Primaries::SRGB, hdr_ceiling_nits: None }),
-        );
-        approx(sdr_with_space.field.w, sdr.field.w, 1e-4, "a space with no HDR ceiling changes nothing");
-        approx(sdr_with_space.value.x, sdr.value.x, 1e-4, "a space with no HDR ceiling changes nothing");
-        assert!(sdr.luminance.is_none(), "no luminance bar without a space at all");
-        assert!(sdr_with_space.luminance.is_none(), "no luminance bar for an SDR space");
-        assert!(
-            !parts(&sdr).iter().any(|(p, _)| *p == Part::Luminance),
-            "no Luminance part without a bar to stand for"
-        );
-
-        let hdr = layout(
-            area,
-            2,
-            Some(GamutSpace { primaries: theme::color::Primaries::BT2020, hdr_ceiling_nits: Some(1000.0) }),
-        );
-        let r = hdr.luminance.expect("an HDR ceiling reserves a luminance bar");
-        assert!(hdr.field.w < sdr.field.w, "the field narrows to make room: {} vs {}", hdr.field.w, sdr.field.w);
-        assert!(
-            r.x >= area.x - 0.01 && r.right() <= area.x + area.w + 0.01,
-            "the luminance bar stays inside the band: {} .. {}",
-            r.x,
-            r.right()
-        );
-        assert!(
-            parts(&hdr).iter().any(|(p, _)| *p == Part::Luminance),
-            "an HDR layout's luminance bar is in the Tab chain"
-        );
-    }
-
-    #[test]
     fn the_gamut_triangle_has_three_straight_edges_and_does_not_move_with_value() {
         //! The triangle's own law (module header, "A SQUARE AND NOT A
         //! CIRCLE"): three vertices, one per primary, each placed by
@@ -2299,59 +2120,4 @@ mod tests {
         assert_ne!(a.hsv[2], b.hsv[2], "the two pickers must actually differ in value for this to test anything");
     }
 
-    #[test]
-    fn a_picker_opens_at_the_sdr_reference_white() {
-        //! [`Picker::of`]/[`Picker::at_rest`] both route through the same
-        //! constructor, so checking one checks both — the luminance bar's
-        //! handle should stand at "ordinary SDR brightness" the moment a
-        //! picker is opened, not at zero or at the ceiling.
-        let p = Picker::of(Color::rgb8(0x80, 0x40, 0x20));
-        approx(p.luminance_at(1000.0), 1.0 - SDR_REFERENCE_NITS / 1000.0, 1e-5, "opens at the reference white");
-    }
-
-    #[test]
-    fn luminance_at_and_pick_luminance_are_inverses() {
-        //! [`Picker::luminance_at`]/[`Picker::pick_luminance`] must agree
-        //! on the same `ceiling_nits` the way [`wheel_point`]/[`wheel_pick`]
-        //! agree on the wheel's own square — a drag to the bar's own top
-        //! or bottom must land exactly there, and a value read back must
-        //! reproduce the fraction it came from.
-        let mut p = Picker::of(Color::WHITE);
-        let ceiling = 1000.0f32;
-        for fy in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
-            p.pick_luminance(fy, ceiling);
-            approx(p.luminance_at(ceiling), fy, 1e-5, &format!("fy={fy}"));
-        }
-        p.pick_luminance(0.0, ceiling);
-        approx(p.luminance_at(ceiling), 0.0, 1e-6, "the top of the bar is the ceiling");
-        p.pick_luminance(1.0, ceiling);
-        approx(p.luminance_at(ceiling), 1.0, 1e-6, "the bottom of the bar is zero nits");
-    }
-
-    #[test]
-    fn colour_hdr_is_the_ordinary_colour_scaled_by_the_nits_gain() {
-        //! [`Picker::colour_hdr`]'s own doc: `hsv_to_rgb` and `to_linear`
-        //! exactly as [`Picker::colour`] uses them, times one gain factor
-        //! — checked here by DIVIDING it back out and comparing against
-        //! the ordinary linear colour, so a mistake in the gain step
-        //! cannot hide behind a mistake in the decode it shares with
-        //! `colour`.
-        let mut p = Picker::of(Color::rgb8(0x40, 0xA0, 0xC0));
-        let ordinary_linear = p.colour().to_linear();
-        for (nits, ref_nits) in [(203.0f32, 203.0), (406.0, 203.0), (1000.0, 203.0), (100.0, 203.0)] {
-            p.pick_luminance(1.0 - nits / 2000.0, 2000.0); // lands `nits` on the axis
-            let hdr = p.colour_hdr(ref_nits);
-            let gain = nits / ref_nits;
-            approx(hdr.r, ordinary_linear.r * gain, 2e-3, &format!("red at {nits} nits"));
-            approx(hdr.g, ordinary_linear.g * gain, 2e-3, &format!("green at {nits} nits"));
-            approx(hdr.b, ordinary_linear.b * gain, 2e-3, &format!("blue at {nits} nits"));
-            approx(hdr.a, ordinary_linear.a, 1e-6, "alpha is untouched by the gain");
-        }
-        // At the reference white itself the gain is exactly 1: HDR and
-        // ordinary agree, which is the whole point of calibrating against
-        // a reference rather than an arbitrary number.
-        p.pick_luminance(1.0 - SDR_REFERENCE_NITS / 2000.0, 2000.0);
-        let at_reference = p.colour_hdr(SDR_REFERENCE_NITS);
-        approx(at_reference.r, ordinary_linear.r, 1e-3, "gain 1 at the reference white");
-    }
 }
