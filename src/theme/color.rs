@@ -482,8 +482,10 @@ impl Primaries {
     ///
     /// [`xyz_to_linear_rgb`]: Primaries::xyz_to_linear_rgb
     ///
-    /// WHAT THIS IS FOR: the colour picker's gamut-boundary triangle
-    /// (`object::color_picker::draw`) places a wide gamut's own primaries
+    /// WHAT THIS WAS FOR, AND WHY IT STAYS ANYWAY. Until the picker's
+    /// slider-bank rewrite (2026-08-24) the colour picker's gamut-boundary
+    /// triangle (`object::color_picker::draw`) placed a wide gamut's own
+    /// primaries
     /// on a wheel whose hue and saturation ARE `rgb_to_hsv` of an
     /// sRGB-encoded colour — hue 0/120/240° are sRGB's own red/green/blue
     /// by that function's construction, and saturation 1 is sRGB's own
@@ -520,6 +522,16 @@ impl Primaries {
     /// both are the one decomposition landing where a coherent RGB
     /// system's own definitions put it, one exactly and one up to a scale
     /// that the reading downstream never sees.
+    ///
+    /// UNUSED SINCE THE TRIANGLE LEFT, AND KEPT ANYWAY: the picker's
+    /// slider bank has no honest place for a 2-D gamut-boundary shape
+    /// (`object::color_picker`'s own module header explains why, and
+    /// names the smaller feature — a live tick on the OKLCh chroma
+    /// slider — that could legitimately use this function again one
+    /// day). Losing its only caller is not a reason to delete tested,
+    /// general-purpose code; [`Color::max_chroma_in`]'s own doc makes
+    /// this same argument about itself, and it applies here without
+    /// having to be made twice.
     pub fn in_srgb_basis(xy: (f32, f32)) -> [f32; 3] {
         let (x, y) = xy;
         let y = y.max(1e-6);

@@ -5046,18 +5046,19 @@ mask_glyph = bullet                 # what a masked char draws as · - · enum: 
 # theme makes.
 # =========================================================================
 [picker]
-gap = @space.3                      # between the field, the bar and the column beside them · - · len (u) · @space.3 = 1.5u = 8.1 px
+gap = @space.3                      # between the slider bank, the patch and the column beside them · - · len (u) · @space.3 = 1.5u = 8.1 px
 pad_x = @space.3                    # inside the two plates, between the ring and the ink · - · len (u) · @space.3 = 1.5u = 8.1 px; the dense-readout inset, as [cell] uses, not the roomier @space.4 a text field wears
-field_h = 26u                       # the hue-by-saturation field's height · - · len (u) · 140.4 px; tall enough to aim inside, short enough for a settings row
-field_w_frac = 0.58                 # how much of the band the field and its bar take, the rest being the patch and the grids · - · frac, 0.1 .. 0.9 · a little over half: the field is the control, everything beside it is a shortcut to a colour
-value_w = 4u                        # the value bar's width · - · len (u) · 21.6 px
+bank_w_frac = 0.58                  # how much of the band the slider bank takes, the rest being the patch and the grids · - · frac, 0.1 .. 0.9 · a little over half: the bank is the control, everything beside it is a shortcut to a colour
+slider_h = 6u                       # one slider's own height · - · len (u) · 32.4 px
+slider_gap = @space.2               # the vertical gap between stacked sliders · - · len (u) · @space.2 = 1u = 5.4 px
+slider_label_w = 4u                 # the channel-letter lane at a slider's own left edge · - · len (u) · 21.6 px; one glyph and its padding, the old value bar's own width repurposed
+slider_min_w = 10u                  # the slider bank's own floor, so it is squeezed rather than made to vanish at a band narrower than bank_w_frac's own share · - · len (u) · 54 px
 patch_h = 6u                        # the chosen colour's patch · - · len (u) · 32.4 px
 row_h = @size.md                    # the readout strip carrying the notation's name and the value · - · len (u) · @size.md
 format_w = 11u                      # the plate that names the notation and steps to the next · - · len (u) · 59.4 px; OKLCH is the longest word it wears and measures 30.3 px at type.data, so this is that word, two pad_x and room for a theme that tracks its data role wider
 swatch = 4u                         # one ready-made colour's cell · - · len (u) · 21.6 px
 swatch_gap = @space.2               # between those cells · - · len (u) · @space.2 = 1u = 5.4 px
-swatch_cols = 8                     # how many cells a grid row holds · - · n · eight is what fits the text side at field_w_frac without the cells shrinking under a fingertip
-hue_stops = 24                      # how finely the circle is sampled across the field · - · n, 2 .. 64 · rounded up to a multiple of six and read as a wedge count for the hue/saturation wheel (2026-08-23), so this is the trade between a smooth wheel and the vertex count; 24 is 15 degrees a wedge, already a multiple of six
+swatch_cols = 8                     # how many cells a grid row holds · - · n · eight is what fits the text side at bank_w_frac without the cells shrinking under a fingertip
 handle = 1.4u                       # half the marker that stands on a chosen point · - · len (u) · 7.6 px
 handle_stroke = @stroke.regular     # that marker's line weight · - · str · @stroke.regular; it is a RING, so the colour it points at stays visible through it
 checker = 1.6u                      # one square of the chequerboard a colour with alpha is shown against · - · len (u) · 8.6 px
