@@ -62,6 +62,8 @@ strict      = false
                     # true reports unknown keys at error level (the theme still loads) · - · true | false · literal
 watch       = false
                     # inotify reload; never polls. Set true while hand-editing, ship it false · - · true | false · literal
+locale      = ""
+                    # which `catalog.*[lang]` sibling widget-drawn UI text reads (5.30) · - · text, a lang tag declared under [catalog], or "" · literal; "" = untagged/English, `name`'s own convention above — THE THEME DECIDES, not a locale guess (num.rs's decimal_sep): nothing reads $LANG to fill this in
 
 
 # =========================================================================
@@ -6211,3 +6213,44 @@ image.render.tint_strength = 1.0    # a wireframe IS a drawing, so it is fully t
 panel_ref_frac = 0.30               # reference panel width as a share of screen height · - · frac · was h * 0.30
 scale_min = 0.62                    # floor of the per-panel font scale · - · f · was clamp lo
 scale_max = 3.0                     # ceiling of the per-panel font scale · - · f · was clamp hi
+
+# =========================================================================
+# 5.30 catalog.* — widget-drawn UI text (audit gap #2, added 2026-08-24)
+#
+# Every string a widget draws that is not a caller-supplied value (a
+# window's own title, a toast's own body) lives here as an ordinary text
+# token, `catalog.<widget>.<name>`, plus a `[lang]`-suffixed sibling per
+# translation (3.2's bracket grammar, same as `name[pl]` above — parse.rs's
+# `parse_key` and cascade.rs's `Schema.localised` already read ANY key this
+# way, not only `meta.*`).
+#
+# THIS SECTION IS UNLIKE [meta] name/description (5.1). Those are THIS
+# THEME's own identity, so a translation is shipped BESIDE that theme, at
+# the top of ITS OWN file (5.1's own comment says so). A catalog string is
+# UI VOCABULARY instead — the same five window-menu words and the same
+# toast title regardless of which theme is active — so the master carries
+# every locale it ships itself, right here, and `[meta] locale` above
+# picks among them. THE THEME DECIDES, not a locale guess (num.rs's
+# decimal_sep): nothing reads $LANG to choose a row.
+#
+# Untagged values below are LITERAL: they are what `object::winframe::MENU`
+# and `object::toaster::Toast::warning` drew before this section existed,
+# unchanged, so a stock build with no theme swap owes nobody a diff.
+# `ThemeDiagnostics::catalog_text`'s own Rust-side fallback — the same
+# literal again, at the call site — is what an incomplete third-party
+# theme draws instead of a blank label; it should never actually fire
+# against this file.
+# =========================================================================
+[catalog]
+winframe.move              = "MOVE"             # window-menu row: move the window · images 7,8 · text · literal
+winframe.move[pl]          = "Przenieś"          # Polish sibling of the row above · images 7,8 · text · literal
+winframe.resize            = "RESIZE"            # window-menu row: resize the window · images 7,8 · text · literal
+winframe.resize[pl]        = "Zmień rozmiar"     # Polish sibling of the row above · images 7,8 · text · literal
+winframe.minimize          = "MINIMIZE"          # window-menu row: minimize the window · images 7,8 · text · literal
+winframe.minimize[pl]      = "Minimalizuj"       # Polish sibling of the row above · images 7,8 · text · literal
+winframe.maximize          = "MAXIMIZE"          # window-menu row: maximize the window · images 7,8 · text · literal
+winframe.maximize[pl]      = "Maksymalizuj"      # Polish sibling of the row above · images 7,8 · text · literal
+winframe.close             = "CLOSE"             # window-menu row: close the window · images 7,8 · text · literal
+winframe.close[pl]         = "Zamknij"           # Polish sibling of the row above · images 7,8 · text · literal
+toaster.warning_title      = "WARNING"           # Toast::warning()'s default title · - · text · literal
+toaster.warning_title[pl]  = "UWAGA"             # Polish sibling of the row above · - · text · literal
