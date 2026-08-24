@@ -851,10 +851,11 @@ impl Corner {
 /// amount. Reach is `radius`, amount is the caller's alpha; this is the
 /// only thing left to decide once those two are known.
 ///
-/// Four numbers because the owner's brief for a neon tube is three
+/// Five numbers because the owner's brief for a neon tube is three
 /// statements about light and one of them (the burned-white core) is not
 /// light at all but the EDGE, drawn by the caller; the fourth is how
-/// finely the first three are laid down. What is here:
+/// finely the first three are laid down, and the fifth is how much of
+/// `radius` the light is let to spend at all. What is here:
 ///
 /// * `decay` — the distance re-map. 1.0 is the soft disk laid flat
 ///   across the reach, which is what every glow in this toolkit drew
@@ -866,7 +867,9 @@ impl Corner {
 ///   over `aura_reach`. The band of colour a photographed sign keeps
 ///   right against the glass, and the reason a tube reads as coloured at
 ///   all once its core has been driven white.
-/// * `aura_reach` — how far that band goes, as a fraction of `radius`.
+/// * `aura_reach` — how far that band goes, as a fraction of `radius *
+///   cutoff` — the reach the light actually gets, not the reach the
+///   theme merely declared (see `cutoff`).
 /// * `bands` — how many rings the reach is cut into, which is how closely
 ///   the emitted geometry follows the re-map. IT LOOKED LIKE A QUALITY
 ///   NUMBER AND IT IS NOT, which is why it is a token like the rest: the
@@ -876,6 +879,23 @@ impl Corner {
 ///   that grew the count with the radius also meant one theme drew two
 ///   different tubes — a steeper one around a button than around a panel
 ///   — with nothing in the file saying so.
+/// * `cutoff` — the fraction of `radius` the geometry actually reaches
+///   out to, `0.0 .. 1.0`. `decay` alone can pull an exponential
+///   arbitrarily close to the mask's own zero texel, but "close" is not
+///   "identical" at any point that is not the true rim — the curve is
+///   continuous, so a decay steep enough to look flat by some small
+///   fraction of a LARGE radius still carries a measurable, monotonic
+///   residual the rest of the way out, because that is what a continuous
+///   re-map of one texture sample can and cannot do (2026-08-24's own
+///   measurement: `decay = 50` on a 4u reach still moved the background
+///   channel by four steps over the outer 90% of it, not zero of them).
+///   A cutoff under 1.0 answers a DIFFERENT question than decay does: at
+///   `radius * cutoff` the geometry simply STOPS being extruded — there
+///   is no quad out there for any alpha to be wrong on, additive or
+///   otherwise, which is the one way to be exactly the background and
+///   not only close to it past a chosen point. 1.0 spends the whole of
+///   `radius`, which is every picture this struct drew before this field
+///   existed.
 ///
 /// Every one of them arrives from a theme token. Nothing in this file
 /// chooses a value; [`GlowProfile::HALO`] is not a design default but the
@@ -887,6 +907,7 @@ pub struct GlowProfile {
     pub aura: f32,
     pub aura_reach: f32,
     pub bands: u32,
+    pub cutoff: f32,
 }
 
 impl GlowProfile {
@@ -894,7 +915,7 @@ impl GlowProfile {
     /// profile could be asked for, and the one `glow_ring` still asks
     /// for. Not a default anybody chose — the numbers at which every
     /// arithmetic step in [`DrawList::glow_ring_with`] is an identity.
-    pub const HALO: Self = Self { decay: 1.0, aura: 1.0, aura_reach: 0.0, bands: 1 };
+    pub const HALO: Self = Self { decay: 1.0, aura: 1.0, aura_reach: 0.0, bands: 1, cutoff: 1.0 };
 
     /// The most rings a reach is ever cut into. A GUARD ON A USER FILE,
     /// in the same family as the `3..=16` on [`ring_points`]'s segments:
@@ -4090,7 +4111,7 @@ impl DrawList {
                 fill: Some(color),
                 stroke: None,
                 glass: None,
-                soft: Some(Soft { reach: radius, kind: SoftKind::Glow }),
+                soft: Some(Soft { reach: radius * profile.cutoff, kind: SoftKind::Glow }),
             });
             return;
         }
@@ -4139,7 +4160,12 @@ impl DrawList {
         // depth the two runs coming off opposite edges meet, and beyond it
         // they would swap sides and the ring would turn itself inside out.
         // The outer face has no such ceiling and keeps the caller's radius.
-        let reach = if inward { radius.min(r.w.min(r.h) * 0.5) } else { radius };
+        // `cutoff` is applied LAST, after that fold clamp — it shrinks
+        // whichever reach the direction already settled on, so the
+        // profile never draws further than either constraint alone
+        // would allow.
+        let reach =
+            (if inward { radius.min(r.w.min(r.h) * 0.5) } else { radius }) * profile.cutoff;
         if !(reach > 0.0) {
             return;
         }
@@ -5189,12 +5215,12 @@ mod tests {
         let mut halo = DrawList::new();
         halo.glow_ring(r, &c, 6, 20.0, col, uv);
         for flat in [
-            GlowProfile { decay: 1.0, aura: 1.0, aura_reach: 0.25, bands: 5 },
-            GlowProfile { decay: 1.0, aura: 2.0, aura_reach: 0.0, bands: 5 },
+            GlowProfile { decay: 1.0, aura: 1.0, aura_reach: 0.25, bands: 5, cutoff: 1.0 },
+            GlowProfile { decay: 1.0, aura: 2.0, aura_reach: 0.0, bands: 5, cutoff: 1.0 },
             // A band count on its own shapes nothing: there is no
             // re-map for the extra rings to follow, so they would land
             // on the line the single band already draws.
-            GlowProfile { decay: 1.0, aura: 1.0, aura_reach: 0.0, bands: 16 },
+            GlowProfile { decay: 1.0, aura: 1.0, aura_reach: 0.0, bands: 16, cutoff: 1.0 },
         ] {
             let mut dl = DrawList::new();
             dl.glow_ring_with(r, &c, 6, 20.0, col, uv, flat);
@@ -5221,7 +5247,7 @@ mod tests {
         let col = Color { r: 0.9, g: 0.2, b: 0.7, a: 0.5 };
         let r = Rect::new(12.0, 20.0, 180.0, 90.0);
         let c = [Corner::round(9.0); 4];
-        let tube = GlowProfile { decay: 3.0, aura: 1.6, aura_reach: 0.3, bands: 5 };
+        let tube = GlowProfile { decay: 3.0, aura: 1.6, aura_reach: 0.3, bands: 5, cutoff: 1.0 };
         assert!(!tube.is_halo(), "the fixture must be a shaped profile");
 
         // The tessellated answer, off the vector lane — the picture the
@@ -5291,7 +5317,7 @@ mod tests {
         let r = Rect::new(40.0, 40.0, 200.0, 120.0);
         let c = [Corner { style: CornerStyle::Square, size: 0.0 }; 4];
         let radius = 24.0;
-        let tube = GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 5 };
+        let tube = GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 5, cutoff: 1.0 };
         let mut dl = DrawList::new();
         dl.glow_ring_with(r, &c, 6, radius, col, uv, tube);
         // The distance a vertex stands at, off the geometry: the glow is
@@ -5349,7 +5375,7 @@ mod tests {
         let r = Rect::new(40.0, 40.0, 200.0, 120.0);
         let c = [Corner { style: CornerStyle::Square, size: 0.0 }; 4];
         let radius = 24.0;
-        let tube = GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 5 };
+        let tube = GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 5, cutoff: 1.0 };
 
         // No register line: the outer call stands for the tube; this is
         // that one intent's second face, not a second glow to hash.
@@ -5484,7 +5510,7 @@ mod tests {
             for bands in [3u32, 5, 8] {
                 for reach in [0.25f32, 0.5, 0.05] {
                     let col = Color { r: 0.6, g: 0.2, b: 0.95, a: amount };
-                    let p = GlowProfile { decay: 3.0, aura: 2.0, aura_reach: reach, bands };
+                    let p = GlowProfile { decay: 3.0, aura: 2.0, aura_reach: reach, bands, cutoff: 1.0 };
                     let mut dl = DrawList::new();
                     dl.glow_ring_with(r, &c, 6, radius, col, uv, p);
                     for v in &dl.verts {
@@ -5615,7 +5641,7 @@ mod tests {
         for bands in [1u32, 2, 3, 5, 8, 16] {
             // No aura, so the cut is the theme's and nothing else's.
             let (got, verts) =
-                rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands });
+                rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands, cutoff: 1.0 });
             let mut want: Vec<f32> = vec![0.0];
             want.extend((1..=bands).map(|k| k as f32 / bands as f32));
             assert_eq!(got.len(), want.len(), "asked for {bands} bands, got rings at {got:?}");
@@ -5631,11 +5657,11 @@ mod tests {
         }
         // The aura's own boundary is the ONE extra, and only when it
         // falls between two of the cut's.
-        let (got, verts) = rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: 5 });
+        let (got, verts) = rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: 5, cutoff: 1.0 });
         assert_eq!(got.len(), 7, "the aura's boundary did not join the cut once: {got:?}");
         assert!(got.iter().any(|f| (f - 0.25).abs() < 1e-4), "no ring at the reach: {got:?}");
         assert_eq!(verts, 6 * per_band, "the reach's own boundary cost more than one band");
-        let (got, verts) = rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.2, bands: 5 });
+        let (got, verts) = rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.2, bands: 5, cutoff: 1.0 });
         assert_eq!(got.len(), 6, "a reach the cut already lands on was cut twice: {got:?}");
         assert_eq!(
             verts,
@@ -5645,14 +5671,14 @@ mod tests {
         );
         // Same radius, same everything else: a different count is a
         // different picture, which is what a design number means.
-        let coarse = rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 3 });
-        let fine = rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 8 });
+        let coarse = rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 3, cutoff: 1.0 });
+        let fine = rings(GlowProfile { decay: 3.0, aura: 1.0, aura_reach: 0.0, bands: 8, cutoff: 1.0 });
         assert_ne!(coarse, fine, "the count reached nothing at radius {radius}");
         // The emitter's own guard, not the reader's: this is `pub`, so a
         // count nobody clamped on the way in still has to land inside the
         // stop buffer rather than off the end of it.
         let (got, _) =
-            rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: u32::MAX });
+            rings(GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: u32::MAX, cutoff: 1.0 });
         assert!(
             got.len() <= GlowProfile::MAX_BANDS as usize + 2,
             "an unclamped count emitted {} rings",
@@ -5677,7 +5703,7 @@ mod tests {
         let r = Rect::new(40.0, 40.0, 200.0, 120.0);
         let c = [Corner::round(9.0); 4];
         let none = (0.0, 0.0, 0.0, 0.0);
-        let tube = GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: 5 };
+        let tube = GlowProfile { decay: 3.0, aura: 2.0, aura_reach: 0.25, bands: 5, cutoff: 1.0 };
         let mut shaped = DrawList::new();
         shaped.glow_ring_with(r, &c, 6, 24.0, col, none, tube);
         let mut plain = DrawList::new();

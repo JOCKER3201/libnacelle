@@ -1181,7 +1181,19 @@ panel_edge.tube_decay = 3.0
                     # third of the radius the tube shows at a twenty-seventh
                     # of it — near the glass everything, past it nothing,
                     # which is the difference between a lit tube and a
-                    # blurred copy of a line.
+                    # blurred copy of a line. Was raised as high as 50
+                    # (2026-08-24) chasing "only a couple of px visible"
+                    # through this exponent alone — wrong tool: a
+                    # continuous re-map can get arbitrarily CLOSE to the
+                    # mask's zero texel but is identical to it at no
+                    # fraction short of 1.0, so however steep, some
+                    # residual survived the whole way out to `radius`
+                    # (measured: even 50 still moved the background
+                    # channel visibly across the outer 90% of a 4u reach).
+                    # `tube_cutoff` answers that question now — decay's
+                    # own job is only the shape INSIDE the reach cutoff
+                    # leaves it, which is exactly what 3.0 was already
+                    # right for before either of them existed.
 panel_edge.tube_aura = 2.0
                     # how much stronger than `alpha` the colour is laid
                     # immediately outside the tube; -; f, >= 1.0; read only
@@ -1195,14 +1207,20 @@ panel_edge.tube_aura = 2.0
                     # pixel — it is undefined output (5.0, 5.13).
 panel_edge.tube_aura_reach = 0.25
                     # how far that stronger colour reaches, as a fraction of
-                    # `radius`; -; frac, 0.0 .. 1.0; read only under
-                    # falloff = tube. It ramps from tube_aura at the glass
-                    # to 1.0 here and stays there. 0.25 is derived from
-                    # tube_decay: a decay of 3 has spent nearly all the
-                    # light inside the first quarter of the radius, so the
-                    # aura colours the light that IS there instead of
-                    # lifting a tail that is not. 0.0 is no aura at all.
-                    # The number is EXACT on screen whatever tube_bands
+                    # `radius * tube_cutoff` — the reach the light actually
+                    # gets, see that key's own doc; -; frac, 0.0 .. 1.0;
+                    # read only under falloff = tube. It ramps from
+                    # tube_aura at the glass to 1.0 here and stays there.
+                    # 0.25 is derived from tube_decay: a decay of 3 has
+                    # spent nearly all the light inside the first quarter
+                    # of the (cutoff-shortened) reach, so the aura colours
+                    # the light that IS there instead of lifting a tail
+                    # that is not. Was re-derived down to 0.00246 for a
+                    # decay of 13 and further for 50 (2026-08-24) while
+                    # decay alone was standing in for `tube_cutoff`'s own
+                    # job; back to 0.25 now that decay is back to the 3.0
+                    # this number was always right for. 0.0 is no aura at
+                    # all. The number is EXACT on screen whatever tube_bands
                     # says: the reach is always one of the rings the light
                     # is cut at, or the picture would let go wherever the
                     # even cut happened to have one.
@@ -1220,7 +1238,28 @@ panel_edge.tube_bands = 5
                     # the reach: at decay 3 that is enough to bend the first
                     # fifth down onto the glass, and it keeps a sprite ring
                     # cheaper than the maskless shell it replaces. Raise it
-                    # for a steeper decay, at one ring stroke each.
+                    # for a steeper decay, at one ring stroke each. Back to
+                    # 5 (2026-08-24) now that `tube_cutoff` carries the job
+                    # a much higher band count was standing in for — decay
+                    # only has to shape the short reach cutoff leaves it,
+                    # not the whole of `radius`, so its own original
+                    # derivation is exact again.
+panel_edge.tube_cutoff = 0.064
+                    # how much of `radius` the light actually gets to
+                    # spend, as a fraction; -; frac, 0.0 .. 1.0; read only
+                    # under falloff = tube. Past `radius * tube_cutoff` no
+                    # geometry is extruded at all — not a small alpha, no
+                    # quad — which is the one way to be exactly the
+                    # background past a chosen point rather than only
+                    # close to it (`decay`, alone, cannot do this: see
+                    # that key's own doc for the measurement that showed
+                    # why). 0.064 (2026-08-24) is ~2.5px of core-adjacent
+                    # glow at `radius = 4u` on the reference screen this
+                    # was checked against (2.5 / ~39px); re-measure if
+                    # `radius` or the reference screen changes, the same
+                    # way `tube_decay`'s own number was. 1.0 is no cutoff
+                    # at all — every picture this key did not exist to
+                    # change.
 
 # ---- focus_ring — the keyboard focus ring -------------------------------
 focus_ring.enabled = false

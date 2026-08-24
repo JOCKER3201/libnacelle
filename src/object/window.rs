@@ -98,7 +98,7 @@ pub(crate) fn corner_segments(
     crate::corner::segments(t, cell, size)
 }
 
-/// The six token ids one `[glow]` class needs before its light can be a
+/// The seven token ids one `[glow]` class needs before its light can be a
 /// LIT TUBE rather than a soft halo.
 ///
 /// Ids and not names, so a class memoises its own and calls the same
@@ -110,9 +110,10 @@ pub(crate) fn corner_segments(
 ///
 /// 1. in the master, add `tube` to that class's `falloff` `enum:` list
 ///    and declare `<class>.tube_decay`, `<class>.tube_aura`,
-///    `<class>.tube_aura_reach` and `<class>.tube_bands` beside it. The
-///    class already declares `boost` — all fifteen do.
-/// 2. build a `TubeKeys` from the six ids in a `OnceLock` of its own,
+///    `<class>.tube_aura_reach`, `<class>.tube_bands` and
+///    `<class>.tube_cutoff` beside it. The class already declares
+///    `boost` — all fifteen do.
+/// 2. build a `TubeKeys` from the seven ids in a `OnceLock` of its own,
 ///    beside the ids that class already memoises.
 /// 3. where the class strokes its ring, ask [`tube_dress`]; on `Some`,
 ///    stroke [`Tube::core`] over the ring at the ring's own width and
@@ -138,6 +139,7 @@ pub(crate) struct TubeKeys {
     aura: TokenId,
     aura_reach: TokenId,
     bands: TokenId,
+    cutoff: TokenId,
 }
 
 /// One class's tube, dressed — the light's shape and the drive on its core.
@@ -204,16 +206,17 @@ pub(crate) fn tube_dress(
         // clamps are the token's declared range and no more: a decay
         // below 1 would spread the light WIDER than the halo it is a
         // sharpening of, an aura below 1 would dim the glass it is a
-        // saturation of, a reach outside 0..1 is not a fraction, and a
-        // band count is a number of ring strokes this process has to
-        // emit — the one clamp of the five that is about the machine
-        // rather than the picture, which is why its ceiling is
-        // `GlowProfile::MAX_BANDS` and not a number spelt here.
+        // saturation of, a reach or a cutoff outside 0..1 is not a
+        // fraction, and a band count is a number of ring strokes this
+        // process has to emit — the one clamp of the six that is about
+        // the machine rather than the picture, which is why its ceiling
+        // is `GlowProfile::MAX_BANDS` and not a number spelt here.
         profile: crate::draw::GlowProfile {
             decay: t.px(k.decay).max(1.0),
             aura: t.px(k.aura).max(1.0),
             aura_reach: t.px(k.aura_reach).clamp(0.0, 1.0),
             bands: t.px(k.bands).clamp(1.0, crate::draw::GlowProfile::MAX_BANDS as f32) as u32,
+            cutoff: t.px(k.cutoff).clamp(0.0, 1.0),
         },
         boost: t.px(k.boost).max(1.0),
     })
@@ -334,6 +337,7 @@ pub(crate) fn panel_edge_glow(
         aura: theme::id("glow.panel_edge.tube_aura").unwrap_or(TokenId::MISSING),
         aura_reach: theme::id("glow.panel_edge.tube_aura_reach").unwrap_or(TokenId::MISSING),
         bands: theme::id("glow.panel_edge.tube_bands").unwrap_or(TokenId::MISSING),
+        cutoff: theme::id("glow.panel_edge.tube_cutoff").unwrap_or(TokenId::MISSING),
     });
     let profile = match tube_dress(t, keys, &TUBE_WORD) {
         // The core FIRST, then the light over it: the burned stroke is
@@ -970,7 +974,7 @@ mod tests {
     /// than the disk's own, a band that lifts, and a reach for it to lift
     /// over.
     ///
-    /// FOUR SEPARATE CLAIMS, deliberately: the tube degrades knob by knob
+    /// FIVE SEPARATE CLAIMS, deliberately: the tube degrades knob by knob
     /// and each degradation is silent. A master that lost `tube_decay`
     /// alone would still draw a burned core inside a lifted band and pass
     /// every other proof in this file, because a missing token reads
@@ -987,6 +991,7 @@ mod tests {
             aura: id("glow.panel_edge.tube_aura"),
             aura_reach: id("glow.panel_edge.tube_aura_reach"),
             bands: id("glow.panel_edge.tube_bands"),
+            cutoff: id("glow.panel_edge.tube_cutoff"),
         };
         let t = a_tube_theme();
         let tube = tube_dress(&t, &keys, &WORD)
@@ -1019,6 +1024,15 @@ mod tests {
             "the master cuts the light into {} band(s), so its decay reaches nothing",
             tube.profile.bands
         );
+        // The sixth claim: the master spends less than the whole of
+        // `radius` on visible light — a cutoff of 1.0 is the identity
+        // (no cutoff), and the master asked for a delicate glow, not
+        // the full reach lit end to end.
+        assert!(
+            (0.0..1.0).contains(&tube.profile.cutoff),
+            "the master's cutoff is {}, which spends the whole of radius",
+            tube.profile.cutoff
+        );
         assert!(!tube.profile.is_halo(), "the master's tube {:?} is a halo", tube.profile);
     }
 
@@ -1050,6 +1064,7 @@ mod tests {
             aura: id("glow.panel_edge.tube_aura"),
             aura_reach: id("glow.panel_edge.tube_aura_reach"),
             bands: id("glow.panel_edge.tube_bands"),
+            cutoff: id("glow.panel_edge.tube_cutoff"),
         };
         // One key overridden at a time, so a reader that answered the
         // right number for the wrong key is caught too.
@@ -1067,7 +1082,7 @@ mod tests {
         };
         // Read out of the profile, so the assertions below compare a
         // theme's number against the reader's answer and nothing else.
-        let seen: [(&str, fn(&Tube) -> f32, f32, [f32; 3]); 5] = [
+        let seen: [(&str, fn(&Tube) -> f32, f32, [f32; 3]); 6] = [
             ("boost", |t| t.boost, master.boost, [1.0, 1.9, 4.0]),
             ("tube_decay", |t| t.profile.decay, master.profile.decay, [1.0, 2.25, 6.0]),
             ("tube_aura", |t| t.profile.aura, master.profile.aura, [1.0, 1.4, 3.5]),
@@ -1080,6 +1095,7 @@ mod tests {
             ("tube_bands", |t| t.profile.bands as f32, master.profile.bands as f32, [
                 1.0, 3.0, 9.0,
             ]),
+            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.3, 1.0]),
         ];
         for (key, read, mine, asked) in seen {
             for want in asked {
@@ -1102,6 +1118,8 @@ mod tests {
             ("tube_aura_reach", "2.0", 1.0),
             ("tube_bands", "0", 1.0),
             ("tube_bands", "1000", crate::draw::GlowProfile::MAX_BANDS as f32),
+            ("tube_cutoff", "-0.5", 0.0),
+            ("tube_cutoff", "2.0", 1.0),
         ] {
             let t = dressed(key, value);
             let got = match key {
@@ -1109,6 +1127,7 @@ mod tests {
                 "tube_decay" => t.profile.decay,
                 "tube_aura" => t.profile.aura,
                 "tube_aura_reach" => t.profile.aura_reach,
+                "tube_cutoff" => t.profile.cutoff,
                 _ => t.profile.bands as f32,
             };
             assert!(
