@@ -109,6 +109,13 @@ pub struct Toaster {
     /// recomputed guess — the popup's own hit box was the minimum-width
     /// one, which missed the right end of every wider toast.
     shown: Vec<Rect>,
+    /// Announcements queued for a future AT-SPI bridge, oldest first.
+    /// A toast is never Tab-focusable — `draw` never touches `FocusCtl`
+    /// or `ctx.access` — but a screen reader still has to learn it
+    /// arrived, which is what a live region is for: text a bridge speaks
+    /// without the user having focused anything. `push` fills this;
+    /// [`Toaster::drain_announcements`] empties it.
+    pending: std::collections::VecDeque<(crate::access::Live, String)>,
 }
 
 impl Toaster {
@@ -132,7 +139,29 @@ impl Toaster {
             dup.born = f64::NAN;
             return;
         }
+        // Heuristic, not a promise: a plain info toast (no severity) is
+        // read as Polite, anything carrying a severity is read as
+        // Assertive. A later pass may want e.g. a dedicated `Sev::Info`
+        // to stay Polite and everything else Assertive, or per-severity
+        // politeness — this is the coarse split that gets a live region
+        // in front of a screen reader today.
+        let live = if t.severity.is_some() {
+            crate::access::Live::Assertive
+        } else {
+            crate::access::Live::Polite
+        };
+        self.pending.push_back((live, format!("{}: {}", t.title, t.body)));
         self.queue.push_back(t);
+    }
+
+    /// Drains every announcement queued since the last drain, oldest
+    /// first — a pure queue drain with no drawing side effects, so it
+    /// can be called (and tested) without a window, exactly the reason
+    /// [`Toaster::age`] gives for keeping the ageing arithmetic apart
+    /// from `draw`. A future host-side AT-SPI bridge calls this once per
+    /// frame and speaks whatever comes back.
+    pub fn drain_announcements(&mut self) -> Vec<(crate::access::Live, String)> {
+        self.pending.drain(..).collect()
     }
 
     /// Everything goes, on screen and queued.
@@ -373,6 +402,53 @@ mod tests {
         ts.push(t("two"));
         ts.push(Toast::new("SAVED", "one"));
         assert_eq!(ts.len(), 3);
+    }
+
+    // ---- live-region announcements -----------------------------------
+
+    #[test]
+    fn a_plain_toast_queues_a_polite_announcement() {
+        let mut ts = Toaster::new();
+        ts.push(Toast::new("SAVED", "your changes are on disk"));
+        let queued = ts.drain_announcements();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, crate::access::Live::Polite);
+        assert_eq!(queued[0].1, "SAVED: your changes are on disk");
+    }
+
+    #[test]
+    fn a_severity_toast_queues_an_assertive_announcement() {
+        let mut ts = Toaster::new();
+        ts.push(t("disk is full").with_severity(Sev(2))); // "warning" in SEVERITY_ROLES
+        let queued = ts.drain_announcements();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, crate::access::Live::Assertive);
+        assert_eq!(queued[0].1, "WARNING: disk is full");
+    }
+
+    #[test]
+    fn drain_announcements_empties_the_queue_and_returns_push_order() {
+        let mut ts = Toaster::new();
+        ts.push(Toast::new("SAVED", "one"));
+        ts.push(Toast::new("SAVED", "two"));
+        let queued = ts.drain_announcements();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].1, "SAVED: one");
+        assert_eq!(queued[1].1, "SAVED: two");
+        // The drain took everything: a second call finds nothing left.
+        assert!(ts.drain_announcements().is_empty());
+    }
+
+    #[test]
+    fn a_dedup_refresh_does_not_double_queue_an_announcement() {
+        let mut ts = Toaster::new();
+        ts.push(t("disk is full"));
+        // Same title AND body: `push` refreshes the existing notice's
+        // dwell instead of enqueueing a second one, and must not queue a
+        // second announcement either — the notice never left the screen.
+        ts.push(t("disk is full"));
+        let queued = ts.drain_announcements();
+        assert_eq!(queued.len(), 1);
     }
 
     #[test]
