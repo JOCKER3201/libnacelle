@@ -224,13 +224,18 @@ impl Color {
     }
 
     /// [`Color::from_oklch`], generalised to an arbitrary target gamut's own
-    /// primaries — the picker's gamut-boundary curve (`object::color_picker`)
-    /// is what asks for this, one spoke at a time, so it can compare a wide
-    /// gamut's own chroma ceiling against sRGB's at the SAME lightness and
-    /// hue. `in_gamut` and the 22-step bisection are [`gamut_map`]'s, shared
-    /// with [`Color::from_oklch`] and untouched; only the candidate colour —
-    /// OKLab routed through [`Primaries::xyz_to_linear_rgb`] instead of the
-    /// fixed sRGB matrices — differs.
+    /// primaries. `in_gamut` and the 22-step bisection are [`gamut_map`]'s,
+    /// shared with [`Color::from_oklch`] and untouched; only the candidate
+    /// colour — OKLab routed through [`Primaries::xyz_to_linear_rgb`] instead
+    /// of the fixed sRGB matrices — differs.
+    ///
+    /// General-purpose gamut-aware colour conversion: no caller in this tree
+    /// uses it today (the picker's own gamut-boundary triangle is drawn from
+    /// [`Primaries::in_srgb_basis`] instead, which needs none of this
+    /// function's bisection), but it and [`Color::max_chroma_in`] below are
+    /// the correct tool the day something DOES need "this OKLCh colour,
+    /// mapped into a named wide gamut rather than sRGB" — kept and tested
+    /// rather than removed on the strength of that.
     pub fn from_oklch_in(v: Oklch, p: &Primaries) -> Self {
         gamut_map(v.l, v.c, v.h, v.alpha, |ok| Self::from_oklab_unmapped_in(ok, p)).0
     }
