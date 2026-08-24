@@ -2712,6 +2712,7 @@ mod tests {
         let mut dl = crate::draw::DrawList::new();
         let mut fonts = crate::font::FontSystem::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: 1920.0,

@@ -15,6 +15,7 @@
 
 use super::focus_ring;
 use super::tabs;
+use crate::access::{AccessInfo, Role};
 use crate::draw::CornerStyle;
 use crate::focus::{Caps, FocusId};
 use crate::ui::Align;
@@ -200,10 +201,15 @@ pub fn draw_focusable(
     st: &StripState,
     id: FocusId,
 ) -> Vec<Rect> {
-    let f = ctx
-        .focus
-        .as_deref_mut()
-        .map(|fc| fc.register(id, r, Caps::GREEDY_ARROWS));
+    let active_label = labels.get(st.active).copied().unwrap_or("");
+    let f = ctx.focus.as_deref_mut().map(|fc| {
+        fc.register(
+            id,
+            r,
+            Caps::GREEDY_ARROWS,
+            AccessInfo::new(Role::RadioButton, active_label),
+        )
+    });
     let cells = draw(ctx, r, labels, st);
     if let Some(cell) = cells.get(st.active) {
         focus_ring::draw_faded(ctx, *cell, f.map_or(false, |f| f.ring));

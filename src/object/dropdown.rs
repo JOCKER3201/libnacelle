@@ -108,6 +108,7 @@
 
 use super::button::ButtonState;
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::focus::{Caps, FocusId};
 use crate::theme::{self, Color, TokenId};
 use crate::view::paint;
@@ -362,7 +363,8 @@ pub fn accordion(
         let full = shown.h >= item_h - 0.5 && shown.w >= row_w - 0.5;
         if at_rest && full {
             if let (Some(base), Some(fc)) = (style.focus, ctx.focus.as_deref_mut()) {
-                if fc.register(base.item(i), shown, Caps::NONE).ring {
+                let access = AccessInfo::new(Role::ComboBox, name.as_str());
+                if fc.register(base.item(i), shown, Caps::NONE, access).ring {
                     ring = Some(shown);
                 }
             }

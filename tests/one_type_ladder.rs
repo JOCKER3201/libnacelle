@@ -44,6 +44,7 @@ fn px_of(binding: &'static str) -> f32 {
         let mut dl = DrawList::new();
         let mut fonts = FontSystem::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: 1920.0,
@@ -194,6 +195,7 @@ fn the_role_a_script_used_to_reach_for_is_still_the_smaller_one() {
         let mut dl = DrawList::new();
         let mut fonts = FontSystem::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: 1920.0,

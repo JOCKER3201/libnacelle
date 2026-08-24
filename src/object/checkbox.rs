@@ -2,6 +2,7 @@
 //! plus a label. The whole row is the click target.
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::corner::Cuts;
 use crate::draw::Corner;
 use crate::focus::{Caps, FocusId};
@@ -171,7 +172,10 @@ pub fn draw_focusable(
     hover: bool,
     id: FocusId,
 ) {
-    let f = ctx.focus.as_deref_mut().map(|fc| fc.register(id, row, Caps::NONE));
+    let f = ctx
+        .focus
+        .as_deref_mut()
+        .map(|fc| fc.register(id, row, Caps::NONE, AccessInfo::new(Role::CheckBox, label)));
     draw(ctx, row, label, checked, hover);
     focus_ring::draw_faded(ctx, row, f.map_or(false, |f| f.ring));
 }
@@ -228,6 +232,7 @@ mod tests {
 
     fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
         Ctx {
+            access: None,
             dl,
             fonts,
             w: 1920.0,

@@ -19,6 +19,7 @@
 //! forbids an eighth) — the only focus signal a control draws is the
 //! overlay ring, [`crate::object::focus_ring`].
 
+use crate::access::AccessInfo;
 use crate::Rect;
 
 // ---------------------------------------------------------------------
@@ -144,12 +145,17 @@ impl Nav {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Entry {
     id: FocusId,
     rect: Rect,
     caps: Caps,
     group: u16,
+    /// This control's accessible role, name and state — carried beside
+    /// the Tab-chain entry rather than through [`crate::access::AccessCtl`]
+    /// (see that module's header) because a FOCUSABLE control's report
+    /// must stay reachable exactly where its focus state already is.
+    access: AccessInfo,
 }
 
 /// The per-world focus chain — owned by the application beside its other
@@ -203,8 +209,19 @@ impl FocusCtl {
 
     /// Called by a control WHILE DRAWING: registers into this frame's
     /// chain and answers from this frame's focus — no one-frame lag.
-    pub fn register(&mut self, id: FocusId, r: Rect, caps: Caps) -> FocusState {
-        self.cur.push(Entry { id, rect: r, caps, group: self.group });
+    /// `access` is the control's accessible role/name/state
+    /// ([`crate::access::AccessInfo`]) — it rides beside the Tab-chain
+    /// entry rather than through [`crate::access::AccessCtl`], see that
+    /// module's header for why a focusable control never uses the
+    /// structural registry.
+    pub fn register(
+        &mut self,
+        id: FocusId,
+        r: Rect,
+        caps: Caps,
+        access: AccessInfo,
+    ) -> FocusState {
+        self.cur.push(Entry { id, rect: r, caps, group: self.group, access });
         let focused = self.focused == Some(id);
         FocusState {
             focused,
@@ -322,6 +339,14 @@ impl FocusCtl {
     /// a Shift+F10 context menu, the IME cursor area.
     pub fn rect_of(&self, id: FocusId) -> Option<Rect> {
         self.prev.iter().find(|e| e.id == id).map(|e| e.rect)
+    }
+
+    /// Every focusable control's accessible report, from the last
+    /// completed frame — the per-frame read a future AT-SPI bridge in
+    /// nacelle-desktop will use. Building that bridge is not this
+    /// crate's job; this accessor only provides what it will need.
+    pub fn entries(&self) -> impl Iterator<Item = (FocusId, Rect, &AccessInfo)> {
+        self.prev.iter().map(|e| (e.id, e.rect, &e.access))
     }
 
     /// Withholds every ring while rects are mid-flight — the board cube
@@ -722,13 +747,13 @@ mod tests {
         let mut fc = FocusCtl::new();
         let a = FocusId::of("a");
         // Frame 1: nothing focused yet.
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(!st.focused && !st.ring);
         fc.begin_frame(); // frame boundary
         assert!(fc.nav(Nav::Next)); // first Tab lands on the head
         assert_eq!(fc.focused(), Some(a));
         // Frame 2: the control is answered focused the same frame.
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(st.focused && st.ring);
     }
 
@@ -737,7 +762,7 @@ mod tests {
         let mut fc = FocusCtl::new();
         let (a, b, c) = (FocusId::of("a"), FocusId::of("b"), FocusId::of("c"));
         for id in [a, b, c] {
-            fc.register(id, r(0.0, 0.0), Caps::NONE);
+            fc.register(id, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         }
         fc.begin_frame();
         fc.nav(Nav::Next);
@@ -755,14 +780,14 @@ mod tests {
     fn pointer_focus_never_summons_the_ring() {
         let mut fc = FocusCtl::new();
         let a = FocusId::of("a");
-        fc.register(a, r(0.0, 0.0), Caps::NONE);
+        fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.focus(Some(a)); // a click
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(st.focused && !st.ring, "click moves focus silently");
         fc.begin_frame();
         fc.nav(Nav::Next); // keyboard navigation happened
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(st.ring, "keyboard summons the ring");
         fc.focus(Some(a)); // any pointer press hides it again
         assert!(!fc.visible());
@@ -772,12 +797,12 @@ mod tests {
     fn vanished_control_drops_focus_and_tab_restarts_at_head() {
         let mut fc = FocusCtl::new();
         let (a, b) = (FocusId::of("a"), FocusId::of("b"));
-        fc.register(a, r(0.0, 0.0), Caps::NONE);
-        fc.register(b, r(20.0, 0.0), Caps::NONE);
+        fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(b, r(20.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.focus_by_key(Some(a));
         // Next frame the layout switched: only b drew.
-        fc.register(b, r(20.0, 0.0), Caps::NONE);
+        fc.register(b, r(20.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         assert_eq!(fc.focused(), None);
         fc.nav(Nav::Next);
@@ -790,10 +815,10 @@ mod tests {
         // A 2x2 settings grid.
         let (a, b) = (FocusId::of("a"), FocusId::of("b"));
         let (c, d) = (FocusId::of("c"), FocusId::of("d"));
-        fc.register(a, r(0.0, 0.0), Caps::NONE);
-        fc.register(b, r(100.0, 0.0), Caps::NONE);
-        fc.register(c, r(0.0, 100.0), Caps::NONE);
-        fc.register(d, r(100.0, 100.0), Caps::NONE);
+        fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(b, r(100.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(c, r(0.0, 100.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(d, r(100.0, 100.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.focus_by_key(Some(a));
         assert!(fc.nav(Nav::Right));
@@ -814,11 +839,11 @@ mod tests {
         let (a, b) = (FocusId::of("s.a"), FocusId::of("s.b"));
         let (x, y) = (FocusId::of("p.x"), FocusId::of("p.y"));
         fc.set_group(1);
-        fc.register(a, r(0.0, 0.0), Caps::NONE);
-        fc.register(b, r(20.0, 0.0), Caps::NONE);
+        fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(b, r(20.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.set_group(2);
-        fc.register(x, r(0.0, 50.0), Caps::NONE);
-        fc.register(y, r(20.0, 50.0), Caps::NONE);
+        fc.register(x, r(0.0, 50.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
+        fc.register(y, r(20.0, 50.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.focus_by_key(Some(b));
         fc.nav(Nav::Next); // wraps to a, never crosses into group 2
@@ -835,7 +860,7 @@ mod tests {
         let mut fc = FocusCtl::new();
         let term = FocusId::of("panel.shell");
         let greedy = Caps::TEXT | Caps::GREEDY_TAB | Caps::GREEDY_ARROWS;
-        fc.register(term, Rect::new(5.0, 6.0, 300.0, 200.0), greedy);
+        fc.register(term, Rect::new(5.0, 6.0, 300.0, 200.0), greedy, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.focus(Some(term));
         assert!(fc.caps().contains(Caps::GREEDY_TAB));
@@ -849,14 +874,14 @@ mod tests {
     fn ring_suppression_wins_over_visibility() {
         let mut fc = FocusCtl::new();
         let a = FocusId::of("a");
-        fc.register(a, r(0.0, 0.0), Caps::NONE);
+        fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         fc.begin_frame();
         fc.nav(Nav::Next);
         fc.set_ring_suppressed(true); // the cube ride starts
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(st.focused && !st.ring);
         fc.set_ring_suppressed(false); // and lands
-        let st = fc.register(a, r(0.0, 0.0), Caps::NONE);
+        let st = fc.register(a, r(0.0, 0.0), Caps::NONE, AccessInfo::new(crate::access::Role::Button, ""));
         assert!(st.ring);
     }
 

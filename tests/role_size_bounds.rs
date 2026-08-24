@@ -38,6 +38,7 @@ fn body_px() -> f32 {
         let mut dl = DrawList::new();
         let mut fonts = FontSystem::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: 1920.0,

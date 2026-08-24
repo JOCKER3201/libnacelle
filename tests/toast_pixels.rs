@@ -159,6 +159,7 @@ fn diff(a: &DrawList, b: &DrawList) -> Vec<String> {
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

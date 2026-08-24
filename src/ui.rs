@@ -2499,6 +2499,7 @@ mod tests {
     /// scaling of its own, so a measured px is the theme's alone.
     fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
         Ctx {
+            access: None,
             dl,
             fonts,
             w: 1920.0,

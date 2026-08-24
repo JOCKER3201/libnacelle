@@ -81,6 +81,7 @@ fn frame(widget: &mut ScriptWidget, fonts: &mut FontSystem) -> Rect {
     let mut dl = DrawList::recording();
     {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts,
             w: W,

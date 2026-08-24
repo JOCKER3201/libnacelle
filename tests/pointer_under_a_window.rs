@@ -105,6 +105,7 @@ fn shot(fonts: &mut FontSystem, p: &mut Pointer, at: (f32, f32), stack: Stack) -
     let mut dl = DrawList::new();
     let mut seen = Seen::default();
     let mut ctx = Ctx {
+        access: None,
         dl: &mut dl,
         fonts,
         w: W,

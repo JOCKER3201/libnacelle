@@ -57,6 +57,7 @@ fn line(y: f32, origin: f32) -> (f32, f32, f32) {
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::new();
         let mut c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,
@@ -89,6 +90,7 @@ fn row_runs(labels: &[&str]) -> Vec<(String, f32)> {
         let mut dl = DrawList::recording();
         {
             let mut c = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: W,

@@ -45,6 +45,7 @@ fn word(name: &str) -> String {
     let mut dl = DrawList::new();
     let mut fonts = FontSystem::new();
     let mut ctx = Ctx {
+        access: None,
         dl: &mut dl,
         fonts: &mut fonts,
         w: 1920.0,

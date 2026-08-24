@@ -105,6 +105,7 @@ fn drawn(values: &[f32], fmt: GaugeValueFmt) -> Vec<Run> {
         let mut dl = DrawList::recording();
         {
             let mut c = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: W,

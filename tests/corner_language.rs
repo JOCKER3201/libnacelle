@@ -34,6 +34,7 @@ const H: f32 = 1080.0;
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem, t: f64) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

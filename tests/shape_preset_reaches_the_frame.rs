@@ -32,6 +32,7 @@ const PANEL: Rect = Rect { x: 200.0, y: 150.0, w: 400.0, h: 260.0 };
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

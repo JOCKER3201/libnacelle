@@ -47,6 +47,7 @@ where
 {
     let mut dl = DrawList::new();
     let mut ctx = Ctx {
+        access: None,
         dl: &mut dl,
         fonts,
         w: W,

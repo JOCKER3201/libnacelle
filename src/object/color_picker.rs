@@ -65,6 +65,7 @@
 //! into a test.
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::corner::Cuts;
 use crate::draw::Corner;
 use crate::focus::{Caps, FocusId};
@@ -1022,10 +1023,13 @@ pub fn draw_focusable(
     let rings: Vec<(Rect, bool)> = parts(l)
         .into_iter()
         .map(|(part, r)| {
-            let f = ctx
-                .focus
-                .as_deref_mut()
-                .map(|fc| fc.register(id_of(part), r, Caps::NONE));
+            let role = match part {
+                Part::Text => Role::TextInput,
+                _ => Role::Slider,
+            };
+            let f = ctx.focus.as_deref_mut().map(|fc| {
+                fc.register(id_of(part), r, Caps::NONE, AccessInfo::new(role, format!("{part:?}")))
+            });
             (r, f.map_or(false, |f| f.ring))
         })
         .collect();
@@ -1059,6 +1063,7 @@ mod tests {
     /// are about what was ASKED for, which is all a draw list holds.
     fn probe<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
         Ctx {
+            access: None,
             dl,
             fonts,
             w: 1920.0,

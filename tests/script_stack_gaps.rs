@@ -65,6 +65,7 @@ fn frame(src: &str) -> Vec<DrawCmd> {
     };
     {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,

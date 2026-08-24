@@ -742,6 +742,14 @@ pub struct Ctx<'a> {
     /// simply not made, which is what a headless test and a plugin's
     /// own surface both want.
     pub tips: Option<&'a mut crate::object::tooltip::Tooltips>,
+    /// Where a control reports its accessible role, name and state
+    /// (crate::access) for a future AT-SPI bridge to read — structural/
+    /// passive containers only; a FOCUSABLE control's AccessInfo travels
+    /// through crate::focus::FocusCtl::register instead, because
+    /// FocusCtl::nav() must never turn a passive node into a Tab stop.
+    /// None while a caller draws without one, same convention as `tips`
+    /// and `focus`.
+    pub access: Option<&'a mut crate::access::AccessCtl>,
 }
 
 impl<'a> Ctx<'a> {

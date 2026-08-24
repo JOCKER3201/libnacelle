@@ -48,6 +48,7 @@ const GRAIN: f32 = 1e-3;
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

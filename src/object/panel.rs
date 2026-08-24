@@ -546,6 +546,7 @@ pub(crate) mod tests {
         let mut fonts = FontSystem::new();
         {
             let mut ctx = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: 1920.0,

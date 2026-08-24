@@ -25,6 +25,7 @@ fn ctx<'a>(
     t: f64,
 ) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

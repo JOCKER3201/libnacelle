@@ -52,6 +52,7 @@ fn panel() -> (Vec<DrawCmd>, Rect) {
         let mut dl = DrawList::recording();
         let content = {
             let mut c = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: W,

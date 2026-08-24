@@ -70,6 +70,7 @@ fn shoot(fonts: &mut FontSystem, clip: Option<Rect>) -> Vec<(Rect, bool)> {
     }
     let rects = {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts,
             w: W,

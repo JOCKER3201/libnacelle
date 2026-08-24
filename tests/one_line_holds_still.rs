@@ -53,6 +53,7 @@ fn drawn<T>(f: impl FnOnce(&mut Ctx) -> T) -> (Vec<f32>, T) {
     let mut dl = DrawList::new();
     let out = {
         let mut c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,
@@ -77,6 +78,7 @@ fn proportional(role: Role, text: &str) -> f32 {
     let mut fonts = FontSystem::new();
     let mut dl = DrawList::new();
     let c = Ctx {
+        access: None,
         dl: &mut dl,
         fonts: &mut fonts,
         w: W,
@@ -236,6 +238,7 @@ fn a_machine_name_is_not_spaced_out_by_a_figure_box() {
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,
@@ -268,6 +271,7 @@ fn a_machine_name_is_not_spaced_out_by_a_figure_box() {
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,

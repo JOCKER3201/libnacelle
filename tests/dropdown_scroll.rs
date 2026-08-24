@@ -136,6 +136,7 @@ fn shoot_at(
     }
     let rects = {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts,
             w: W,
@@ -576,6 +577,7 @@ fn elements_outside_the_frame_join_no_chain(fonts: &mut FontSystem) {
     let mut sv = ScrollView::new();
     let rects = {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts,
             w: W,

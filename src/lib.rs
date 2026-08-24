@@ -59,6 +59,7 @@
 //! PTY, collecting telemetry and handing audio frames to a device are
 //! the platform's job and live in the application.
 
+pub mod access;
 pub mod assets;
 pub mod base;
 pub mod channel;

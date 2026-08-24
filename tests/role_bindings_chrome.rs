@@ -70,6 +70,7 @@ fn fresh<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

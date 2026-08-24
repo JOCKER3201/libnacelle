@@ -99,6 +99,7 @@ fn shoot(fonts: &mut FontSystem, p: f32, mouse: (f32, f32)) -> (DrawList, Vec<(R
     let mut dl = DrawList::recording();
     let rects = {
         let mut ctx = Ctx {
+            access: None,
             dl: &mut dl,
             fonts,
             w: W,

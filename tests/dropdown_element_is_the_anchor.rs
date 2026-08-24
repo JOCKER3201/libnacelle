@@ -79,6 +79,7 @@ fn px_of(name: &str) -> f32 {
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem, mouse: (f32, f32)) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,

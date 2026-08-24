@@ -3,6 +3,7 @@
 //! flash on click, optional "selected" state).
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::focus::{Caps, FocusId};
 use crate::draw::Corner;
 use crate::theme::{self, bake::StateStyle, parse::State, Color, TokenId};
@@ -276,7 +277,10 @@ pub fn draw(ctx: &mut Ctx, r: Rect, label: &str, st: ButtonState) {
 /// (`ButtonState` grows no `focused` field); the ring overlay is the
 /// only focus signal, drawn around the same slanted quad.
 pub fn draw_focusable(ctx: &mut Ctx, r: Rect, label: &str, st: ButtonState, id: FocusId) {
-    let f = ctx.focus.as_deref_mut().map(|fc| fc.register(id, r, Caps::NONE));
+    let f = ctx
+        .focus
+        .as_deref_mut()
+        .map(|fc| fc.register(id, r, Caps::NONE, AccessInfo::new(Role::Button, label)));
     draw(ctx, r, label, st);
     // Asked EVERY frame, ring or no ring: the band fades in and out on
     // `motion.focus`, and a call made only while focused would have
@@ -446,6 +450,7 @@ mod tests {
 
     fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
         Ctx {
+            access: None,
             dl,
             fonts,
             w: 1920.0,

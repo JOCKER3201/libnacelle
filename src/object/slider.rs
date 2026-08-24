@@ -3,6 +3,7 @@
 //! returned track rectangle.
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::corner::Cuts;
 use crate::draw::{Corner, CornerStyle};
 use crate::focus::{Caps, FocusId};
@@ -126,7 +127,9 @@ pub fn track(ctx: &mut Ctx, track: Rect, t: f32) {
 /// caller's value logic. Tab still leaves. The ring wraps the track
 /// rect the caller already hit-tests.
 pub fn track_focusable(ctx: &mut Ctx, r: Rect, t: f32, id: FocusId) {
-    let f = ctx.focus.as_deref_mut().map(|fc| fc.register(id, r, Caps::GREEDY_ARROWS));
+    let f = ctx.focus.as_deref_mut().map(|fc| {
+        fc.register(id, r, Caps::GREEDY_ARROWS, AccessInfo::new(Role::Slider, ""))
+    });
     track(ctx, r, t);
     focus_ring::draw_faded(ctx, r, f.map_or(false, |f| f.ring));
 }

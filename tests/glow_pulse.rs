@@ -67,6 +67,7 @@ fn master() {
 fn frame_at(fonts: &mut FontSystem, now: f64) -> Vec<[f32; 8]> {
     let mut dl = DrawList::new();
     let mut ctx = Ctx {
+        access: None,
         dl: &mut dl,
         fonts,
         w: W,

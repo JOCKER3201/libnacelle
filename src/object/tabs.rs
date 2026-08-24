@@ -22,6 +22,7 @@
 //! (`type.button.case = upper`) and may not on a theme that moves it.
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::focus::{Caps, FocusId, Key, KeyEv, Mods};
 use crate::theme::parse::State;
 use crate::theme::{self, Color, TokenId};
@@ -434,10 +435,10 @@ pub fn draw_focusable(
     id: FocusId,
 ) -> Vec<Rect> {
     static SKEW: OnceLock<TokenId> = OnceLock::new();
-    let f = ctx
-        .focus
-        .as_deref_mut()
-        .map(|fc| fc.register(id, r, Caps::GREEDY_ARROWS));
+    let active_label = labels.get(st.active).copied().unwrap_or("");
+    let f = ctx.focus.as_deref_mut().map(|fc| {
+        fc.register(id, r, Caps::GREEDY_ARROWS, AccessInfo::new(Role::Tab, active_label))
+    });
     let cells = draw(ctx, r, labels, st);
     if let Some(cell) = cells.get(st.active) {
         let skew = theme::resolved().px(tok(&SKEW, "tab.skew")).max(0.0);

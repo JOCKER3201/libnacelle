@@ -57,6 +57,7 @@ fn gauges(kind: GaugeKind) -> Vec<String> {
         let mut dl = DrawList::recording();
         {
             let mut c = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: W,
@@ -95,6 +96,7 @@ fn text_runs(kind: GaugeKind) -> Vec<(f32, String)> {
         let mut dl = DrawList::recording();
         {
             let mut c = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: W,
@@ -148,6 +150,7 @@ fn role_px(name: &str) -> f32 {
         let mut fonts = FontSystem::new();
         let mut dl = DrawList::new();
         let c = Ctx {
+            access: None,
             dl: &mut dl,
             fonts: &mut fonts,
             w: W,

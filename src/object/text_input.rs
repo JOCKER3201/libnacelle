@@ -26,6 +26,7 @@
 //! can replace the measure function without touching the model.
 
 use super::focus_ring;
+use crate::access::{AccessInfo, Role};
 use crate::draw::Corner;
 use crate::focus::{Caps, FocusId, Key, KeyEv, Mods};
 use crate::font::{with_neighbours, Figures, FontSystem};
@@ -921,10 +922,9 @@ pub fn draw(
     static ROLE: OnceLock<TokenId> = OnceLock::new();
     static CLASS: OnceLock<Option<u16>> = OnceLock::new();
 
-    let f = ctx
-        .focus
-        .as_deref_mut()
-        .map(|fc| fc.register(id, r, Caps::TEXT | Caps::GREEDY_ARROWS));
+    let f = ctx.focus.as_deref_mut().map(|fc| {
+        fc.register(id, r, Caps::TEXT | Caps::GREEDY_ARROWS, AccessInfo::new(Role::TextInput, ""))
+    });
     let focused = f.map(|f| f.focused).unwrap_or(style.focused_fallback) && !style.disabled;
 
     let t = theme::resolved();
@@ -1300,6 +1300,7 @@ pub(crate) mod tests {
         let mut fonts = crate::font::FontSystem::new();
         {
             let mut ctx = Ctx {
+                access: None,
                 dl: &mut dl,
                 fonts: &mut fonts,
                 w: 1920.0,

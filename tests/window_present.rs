@@ -50,6 +50,7 @@ fn master() {
 fn at(fonts: &mut FontSystem, open: bool, now: f64) -> Present {
     let mut dl = DrawList::new();
     let mut ctx = Ctx {
+        access: None,
         dl: &mut dl,
         fonts,
         w: W,

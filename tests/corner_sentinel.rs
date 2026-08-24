@@ -44,6 +44,7 @@ const INK: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
 fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem) -> Ctx<'a> {
     Ctx {
+        access: None,
         dl,
         fonts,
         w: W,
