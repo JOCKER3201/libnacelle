@@ -26,7 +26,7 @@
 //! can replace the measure function without touching the model.
 
 use super::focus_ring;
-use crate::access::{AccessInfo, Role};
+use crate::access::{AccessInfo, Role, States};
 use crate::draw::Corner;
 use crate::focus::{Caps, FocusId, Key, KeyEv, Mods};
 use crate::font::{with_neighbours, Figures, FontSystem};
@@ -893,6 +893,17 @@ fn caret_shape() -> CaretShape {
 /// registers `Caps::TEXT | GREEDY_ARROWS` (arrows edit, Tab leaves —
 /// fields are not greedy for Tab); without one,
 /// `style.focused_fallback` answers instead.
+///
+/// The same registration carries the field's [`AccessInfo`]:
+/// `style.placeholder` stands in for a name (no caller-supplied label
+/// reaches `draw` without a signature change, and a placeholder is
+/// closer to one than the empty string this used to pass), DISABLED
+/// mirrors `style.disabled` — the same bool that already gates the
+/// caret and the state ladder above — and the value is the field's
+/// DISPLAY string, run through [`shown`] exactly as the glyphs on
+/// screen are: a masked field must not hand its plaintext to a screen
+/// reader any more than it hands it to the clipboard (see `mask` on
+/// [`InputModel`]).
 pub fn draw(
     ctx: &mut Ctx,
     r: Rect,
@@ -923,7 +934,11 @@ pub fn draw(
     static CLASS: OnceLock<Option<u16>> = OnceLock::new();
 
     let f = ctx.focus.as_deref_mut().map(|fc| {
-        fc.register(id, r, Caps::TEXT | Caps::GREEDY_ARROWS, AccessInfo::new(Role::TextInput, ""))
+        let states = if style.disabled { States::DISABLED } else { States::NONE };
+        let access = AccessInfo::new(Role::TextInput, style.placeholder)
+            .with_states(states)
+            .with_value(shown(model.value(), model.mask.then(mask_char)));
+        fc.register(id, r, Caps::TEXT | Caps::GREEDY_ARROWS, access)
     });
     let focused = f.map(|f| f.focused).unwrap_or(style.focused_fallback) && !style.disabled;
 
@@ -1276,6 +1291,7 @@ pub fn hit(ctx: &mut Ctx, r: Rect, model: &InputModel, x: f32) -> usize {
 pub(crate) mod tests {
     use super::*;
     use crate::draw::{DrawCmd, DrawList};
+    use crate::focus::FocusCtl;
     use crate::font::FONT_MONO;
     use crate::pointer::Pointer;
     use std::path::{Path, PathBuf};
@@ -1837,6 +1853,103 @@ pub(crate) mod tests {
         // The caller resolves the intent and sends the text back.
         assert_eq!(m.apply(InputMsg::Insert("clip".into())), InputEdited::Edited);
         assert_eq!(m.value(), "clip");
+    }
+
+    // ---- accessibility ----
+    //
+    // Unlike `drawn_runs`, these need a REAL `FocusCtl` — the field's
+    // `AccessInfo` rides beside the Tab-chain entry `register` makes,
+    // not through the draw list, so reading it back means the same
+    // round trip a future AT-SPI bridge takes: register, `begin_frame`,
+    // `entries`.
+
+    /// Draws `model` once against a live focus chain and hands back the
+    /// field's own [`AccessInfo`], read the way [`FocusCtl::entries`]
+    /// hands it to a bridge.
+    fn access_of(model: &mut InputModel, style: &InputStyle) -> AccessInfo {
+        crate::draw::arm_cmds();
+        let mut dl = DrawList::new();
+        let mut fonts = crate::font::FontSystem::new();
+        let mut fc = FocusCtl::new();
+        {
+            let mut ctx = Ctx {
+                access: None,
+                dl: &mut dl,
+                fonts: &mut fonts,
+                w: 1920.0,
+                h: 1080.0,
+                t: 1000.0,
+                mouse: Pointer::new(-1.0, -1.0),
+                term_font_scale: 1.0,
+                ui_font_scale: 1.0,
+                panel_scale: 1.0,
+                focus: Some(&mut fc),
+                tips: None,
+            };
+            draw(&mut ctx, field_box(), model, FocusId::of("probe"), style);
+        }
+        // The chain only answers `entries()` from a COMPLETED frame —
+        // the same contract `FocusCtl::nav` relies on.
+        fc.begin_frame();
+        let (_, _, info) = fc.entries().next().expect("the field registered itself");
+        info.clone()
+    }
+
+    #[test]
+    fn access_role_is_text_input() {
+        let mut model = InputModel::new();
+        let info = access_of(&mut model, &InputStyle::default());
+        assert_eq!(info.role, Role::TextInput);
+    }
+
+    #[test]
+    fn access_name_falls_back_to_the_placeholder() {
+        let mut model = InputModel::new();
+        let style = InputStyle { placeholder: "Search", ..InputStyle::default() };
+        let info = access_of(&mut model, &style);
+        assert_eq!(info.name, "Search");
+    }
+
+    #[test]
+    fn disabled_style_sets_the_disabled_access_state() {
+        let mut model = InputModel::new();
+        let style = InputStyle { disabled: true, ..InputStyle::default() };
+        let info = access_of(&mut model, &style);
+        assert!(info.states.contains(States::DISABLED));
+    }
+
+    #[test]
+    fn an_enabled_field_carries_no_disabled_state() {
+        let mut model = InputModel::new();
+        let info = access_of(&mut model, &InputStyle::default());
+        assert!(!info.states.contains(States::DISABLED));
+    }
+
+    #[test]
+    fn access_value_carries_the_current_text() {
+        let mut model = InputModel::new();
+        model.set_value("hello");
+        let info = access_of(&mut model, &InputStyle::default());
+        assert_eq!(info.value.as_deref(), Some("hello"));
+    }
+
+    /// A masked field's accessible value must not leak its plaintext any
+    /// more than its clipboard does (`masked_fields_never_answer_copy`,
+    /// above): the reported value is the mask glyph repeated once per
+    /// grapheme, exactly what the eye sees on screen, and never the
+    /// underlying secret.
+    #[test]
+    fn masked_fields_report_the_mask_glyph_not_the_value() {
+        let mut model = InputModel::new().with_mask(true);
+        model.set_value("secret");
+        let info = access_of(&mut model, &InputStyle::default());
+        let v = info.value.expect("a masked field still reports a value");
+        assert_ne!(v, "secret", "the accessible value leaked the plaintext");
+        assert_eq!(
+            v.chars().count(),
+            "secret".chars().count(),
+            "the mask glyph should stand in one-for-one with the value's graphemes"
+        );
     }
 
     // ---- key translation ----
