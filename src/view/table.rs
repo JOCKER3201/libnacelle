@@ -255,6 +255,31 @@ struct OrderKey {
     sorted: bool,
 }
 
+/// What identifies the cached content-width measurement — [`OrderKey`]'s
+/// pattern, reused rather than reinvented for a second per-frame cost a
+/// model-backed table carries: measuring every visible cell's text with
+/// the font system is not free, and doing it sixty times a second for a
+/// screen that has not moved is the same trap `OrderKey` already exists
+/// to keep the sort out of.
+///
+/// It is not simply `OrderKey` renamed, because the measure depends on
+/// something the order does not: WHICH rows are on screen. The order is
+/// a permutation of every row and does not care what the viewport shows;
+/// the content measure only ever looked at the visible window (u2 §2.7's
+/// "measured from its widest CELL" has only ever meant the widest cell
+/// that could be seen), so a row scrolling into view — one that might be
+/// the widest the column has had all along — has to invalidate the
+/// cache even when the model's generation and length have not moved.
+/// `window_first`/`window_count` carry that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidthKey {
+    pub generation: u64,
+    pub len: usize,
+    pub cols: usize,
+    pub window_first: usize,
+    pub window_count: usize,
+}
+
 /// What the last draw put on screen.
 ///
 /// Input arrives BETWEEN frames, with no drawing context and no theme
@@ -301,6 +326,12 @@ pub struct TableState {
     /// `order[i]` is the model row shown at display position `i`.
     order: Vec<usize>,
     order_key: Option<OrderKey>,
+    /// The last `ColWidth::Content` measurement, and the [`WidthKey`] it
+    /// was built from — `None` until the first draw. Skipped entirely
+    /// for `WidthKey.generation == 0` (see [`TableState::cached_measure`]),
+    /// so a caller with no stable generation pays no bookkeeping for a
+    /// cache it can never hit.
+    width_cache: Option<(WidthKey, Vec<ColMeasure>)>,
     /// The column heading under a press that has not been released —
     /// the `press` rung of the `table.head` class.
     pressed_head: Option<usize>,
@@ -456,6 +487,37 @@ impl TableState {
     /// back in view. Linear — used on a click, never per frame.
     pub fn display_of(&self, row: usize) -> Option<usize> {
         self.order.iter().position(|r| *r == row)
+    }
+
+    /// The cached `ColWidth::Content` measurement for `key`, or `None` on
+    /// a miss: no cache built yet, a `key` that does not match the one
+    /// the cache was built from, or `key.generation == 0`.
+    ///
+    /// Generation 0 is never served from cache on purpose — it is the
+    /// trait's own "no opinion" default ([`super::table_model::
+    /// TableModel::generation`]'s doc), and a model that cannot say when
+    /// it last changed gets exactly what `ui::table_surface` has always
+    /// given it: a fresh measure every frame, not a stale one because two
+    /// unrelated snapshots happened to share the same window and length.
+    pub fn cached_measure(&self, key: WidthKey) -> Option<&[ColMeasure]> {
+        if key.generation == 0 {
+            return None;
+        }
+        match &self.width_cache {
+            Some((k, m)) if *k == key => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Remembers `measured` against `key`, for the next frame's
+    /// [`TableState::cached_measure`] to find. A no-op at
+    /// `key.generation == 0` — the same case [`TableState::cached_measure`]
+    /// never serves, so there is nothing to gain by holding onto it.
+    pub fn set_width_cache(&mut self, key: WidthKey, measured: Vec<ColMeasure>) {
+        if key.generation == 0 {
+            return;
+        }
+        self.width_cache = Some((key, measured));
     }
 }
 
@@ -627,6 +689,64 @@ mod tests {
         st.select(None);
         assert!(!st.is_selected("1471"));
         assert!(st.interact_epoch > e);
+    }
+
+    fn width_key(generation: u64) -> WidthKey {
+        WidthKey { generation, len: 40, cols: 3, window_first: 0, window_count: 12 }
+    }
+
+    /// The plain case: nothing cached answers a miss, a `set` then an
+    /// identical `key` answers a hit, and the cached slice is exactly
+    /// what was stored — the whole reason `ui::table_surface` would ever
+    /// reach for this instead of measuring again.
+    #[test]
+    fn the_width_cache_hits_on_the_same_key() {
+        let mut st = TableState::new();
+        let key = width_key(1);
+        assert!(st.cached_measure(key).is_none(), "nothing stored yet");
+        let measured = vec![ColMeasure::heading(10.0), ColMeasure::heading(20.0)];
+        st.set_width_cache(key, measured.clone());
+        assert_eq!(st.cached_measure(key), Some(measured.as_slice()));
+    }
+
+    /// Every field of the key is load-bearing: a moved window, a changed
+    /// length, a rewritten generation and a changed column count each
+    /// invalidate on their own, because each is a real reason the widest
+    /// cell on screen may have changed.
+    #[test]
+    fn any_change_to_the_key_is_a_miss() {
+        let mut st = TableState::new();
+        let key = width_key(1);
+        st.set_width_cache(key, vec![ColMeasure::heading(10.0)]);
+        assert!(st.cached_measure(WidthKey { generation: 2, ..key }).is_none(), "generation");
+        assert!(st.cached_measure(WidthKey { len: 41, ..key }).is_none(), "len");
+        assert!(st.cached_measure(WidthKey { cols: 4, ..key }).is_none(), "cols");
+        assert!(
+            st.cached_measure(WidthKey { window_first: 1, ..key }).is_none(),
+            "a scrolled window may reveal a wider cell"
+        );
+        assert!(
+            st.cached_measure(WidthKey { window_count: 13, ..key }).is_none(),
+            "window_count"
+        );
+        // The exact key that was stored still hits.
+        assert!(st.cached_measure(key).is_some());
+    }
+
+    /// `generation() == 0` is the trait's own "no opinion": a table
+    /// backed by a model that cannot say when it last changed must
+    /// recompute every frame exactly as it always has, so the cache is
+    /// never written to and never read from at that generation, even
+    /// for a key that would otherwise match perfectly.
+    #[test]
+    fn generation_zero_never_caches() {
+        let mut st = TableState::new();
+        let key = width_key(0);
+        st.set_width_cache(key, vec![ColMeasure::heading(10.0)]);
+        assert!(
+            st.cached_measure(key).is_none(),
+            "a model with no generation must recompute every frame"
+        );
     }
 
     /// A divider drag is absolute — the column is as wide as the hand

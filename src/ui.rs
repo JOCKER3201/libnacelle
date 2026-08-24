@@ -16,6 +16,7 @@ use crate::num;
 use crate::theme::{self, Color, TokenId};
 use crate::view::paint;
 use crate::view::surface::{CtxSurface, Surface};
+use crate::view::table_model::TableModel;
 use crate::{Ctx, Rect};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -1626,11 +1627,23 @@ pub fn table_view(
 /// pixels did not move. What it buys is that the interactive table
 /// cannot exist twice — the fate `ui::fit_end_tracked` and the file
 /// panel's `fit_name` already met.
-pub fn table_surface<S: Surface>(
+///
+/// Generic over [`TableModel`] for the same reason [`crate::view::list::
+/// list`] is generic over `RowModel`: a table with a scrolled window
+/// shows perhaps forty rows, and `rows: &[Vec<String>]` meant every
+/// caller had already materialised every row's every cell before this
+/// function ever ran, whatever fraction of them actually drew. `table`
+/// and `table_view` below keep their own signatures — `rows: &[Vec<
+/// String>]` — unchanged; that concrete type is what lets a
+/// `Vec<Vec<String>>` caller (`src/script.rs`'s `table` builtin) keep
+/// compiling without a single line moved, because `M` is inferred as
+/// `[Vec<String>]` at their call into this function exactly as it always
+/// resolved the rest of the signature.
+pub fn table_surface<S: Surface, M: TableModel + ?Sized>(
     sf: &mut S,
     r: Rect,
     columns: &[Column],
-    rows: &[Vec<String>],
+    model: &M,
     st: &TableStyle,
     mut view: Option<TableView>,
 ) {
@@ -1661,7 +1674,7 @@ pub fn table_surface<S: Surface>(
     // the row's cells with that entry removed — but only when the row
     // actually carries the extra entry, so a script that declares the
     // column and then forgets the word loses nothing visible.
-    let sev_slot = |row: &Vec<String>| -> Option<usize> {
+    let sev_slot = |row: &[String]| -> Option<usize> {
         match st.severity_col {
             Some(sc) if row.len() > columns.len() && sc < row.len() => Some(sc),
             _ => None,
@@ -1702,6 +1715,24 @@ pub fn table_surface<S: Surface>(
         ),
         None => (None, None, 0, false, false, None, false, 0, false),
     };
+    // `generation` here is `TableView::generation`, not `model.generation()`
+    // — deliberately the one source of truth rather than two ways to say
+    // the same thing. `TableModel::generation` exists for a model type
+    // that carries its own snapshot counter; the two shapes this crate
+    // ships (`[Vec<String>]`, `Vec<Vec<String>>`) are plain data with no
+    // such counter and answer the trait's `0` default. `src/script.rs`'s
+    // real generation (`host.snap.generation`) already had a place to
+    // ride — `TableView::generation`, exactly as `refresh_order`'s
+    // caching has always taken it — and a model that DOES track its own
+    // generation loses nothing by having its caller pass that same
+    // number into `TableView::generation` too, so this function only
+    // ever reads it from the one place.
+
+    // The model's row count, read once: every place below that used to
+    // read `rows.len()` reads this instead, and it is the one call that
+    // must stay cheap regardless of how the model answers `row` — a
+    // lazy model still has to be able to COUNT its rows for free.
+    let total = model.len();
 
     // The table spans its box: as many rows as fit after the header,
     // sharing the height exactly, starting at the top edge. Only when
@@ -1711,7 +1742,7 @@ pub fn table_surface<S: Surface>(
     let head_h = sf.px("table.head_h") * st.shrink;
     let natural_h = sf.px("table.row_h") * st.shrink;
     let fits = ((r.h - head_h).max(0.0) / natural_h.max(1.0)).floor() as usize;
-    let shown = rows.len().min(fits);
+    let shown = total.min(fits);
     let fitted_h = if shown >= fits && shown > 0 {
         (r.h - head_h) / shown as f32
     } else {
@@ -1742,11 +1773,20 @@ pub fn table_surface<S: Surface>(
     // the sort moved, never per frame.
     if let Some(s) = state.as_deref_mut() {
         let sc = s.sort.map(|(c, _)| c).unwrap_or(0);
-        s.refresh_order(generation, rows.len(), |i| {
-            rows.get(i)
-                .and_then(|row| row.get(cell_of(sev_slot(row), sc)))
-                .cloned()
-                .unwrap_or_default()
+        // `Fn`, not `FnMut` — `refresh_order` may call this once per row
+        // of a sort — so the row buffer is a fresh `Vec` per call rather
+        // than a reused one. That is only paid on the cold path this
+        // closure already was: `refresh_order` itself skips the sort
+        // entirely when its `OrderKey` still matches, so this runs once
+        // per row per RESORT, not once per row per frame.
+        s.refresh_order(generation, total, |i| {
+            if i >= total {
+                return String::new();
+            }
+            let mut cell_row = Vec::new();
+            model.row(i, &mut cell_row);
+            let slot = sev_slot(&cell_row);
+            cell_row.get(cell_of(slot, sc)).cloned().unwrap_or_default()
         });
     }
 
@@ -1760,7 +1800,7 @@ pub fn table_surface<S: Surface>(
         s.extent = crate::view::table::Extent {
             scrollable: scrolling,
             viewport: body_h,
-            content: crate::view::virt::content_h(row_h, rows.len()),
+            content: crate::view::virt::content_h(row_h, total),
             bar: None,
         };
     }
@@ -1770,7 +1810,7 @@ pub fn table_surface<S: Surface>(
         let now = sf.now();
         let mouse = sf.mouse();
         if let Some(s) = state.as_deref_mut() {
-            let content = crate::view::virt::content_h(row_h, rows.len());
+            let content = crate::view::virt::content_h(row_h, total);
             // A clipping surface leaves the offset free and a row may be
             // half visible; one that cannot snaps to whole rows.
             let snap = if can_clip {
@@ -1779,7 +1819,7 @@ pub fn table_surface<S: Surface>(
                 crate::view::Snap::Row(row_h)
             };
             s.scroll.tick(now, body_h, content, snap, &phys);
-            window = crate::view::virt::row_window(s.scroll.offset(), body_h, row_h, rows.len());
+            window = crate::view::virt::row_window(s.scroll.offset(), body_h, row_h, total);
             let area = Rect::new(r.x, body_y, r.w, body_h);
             // The band the bar could occupy at its WIDEST, on whichever
             // edge the theme puts it: a bar that grows under the pointer
@@ -1810,7 +1850,7 @@ pub fn table_surface<S: Surface>(
     // From here on the state is only READ, which is what lets the order
     // be borrowed for the whole of the drawing below.
     let order: &[usize] = match state.as_deref() {
-        Some(s) if s.order().len() == rows.len() => s.order(),
+        Some(s) if s.order().len() == total => s.order(),
         _ => &[],
     };
     // `order[d]` when there is one, `d` when there is not: an identity
@@ -1854,28 +1894,70 @@ pub fn table_surface<S: Surface>(
     let measured_span = if scrolling {
         window.first..window.first + window.count
     } else {
-        0..shown.max(1).min(rows.len().max(1))
+        0..shown.max(1).min(total.max(1))
     };
-    let mut measured: Vec<crate::view::table::ColMeasure> = Vec::with_capacity(columns.len());
-    for (i, c) in columns.iter().enumerate() {
-        let head = sf.measure_tab(head_face, head_px, &c.title, head_track, head_tab);
-        let mut content = head;
-        if c.width == ColWidth::Content && i != st.elastic {
+    // `TableState::cached_measure`'s key: the window bounds ride along
+    // beside the model's own generation and length because the measure,
+    // unlike the sort order, only ever looked at the rows ON SCREEN — a
+    // row scrolling into view may be the widest the column has had all
+    // along, so a moved window is as real a reason to remeasure as a
+    // rewritten model.
+    let width_key = crate::view::table::WidthKey {
+        generation,
+        len: total,
+        cols: columns.len(),
+        window_first: measured_span.start,
+        window_count: measured_span.end - measured_span.start,
+    };
+    let cached_measured =
+        state.as_deref().and_then(|s| s.cached_measure(width_key)).map(|m| m.to_vec());
+    let measure_was_cached = cached_measured.is_some();
+    let measured: Vec<crate::view::table::ColMeasure> = match cached_measured {
+        Some(m) => m,
+        None => {
+            // Heads first, unconditionally — every column has one
+            // whether or not it is `ColWidth::Content`.
+            let mut measured: Vec<crate::view::table::ColMeasure> = columns
+                .iter()
+                .map(|c| {
+                    let head = sf.measure_tab(head_face, head_px, &c.title, head_track, head_tab);
+                    crate::view::table::ColMeasure {
+                        head,
+                        content: head,
+                        bar: matches!(c.kind, CellKind::Bar { .. }),
+                    }
+                })
+                .collect();
+            // Rows on the OUTSIDE, columns on the inside: one
+            // `model.row` call per row in the window rather than one per
+            // (row, `Content`-column) pair. For a materialised
+            // `Vec<Vec<String>>` the difference is nothing — an index is
+            // an index — but for a model that FORMATS a row on demand
+            // (§6's lazy test model) it is the difference between paying
+            // for the window once and paying for it once per column.
+            let mut cell_row: Vec<String> = Vec::new();
             for d in measured_span.clone() {
-                let Some(row) = rows.get(model_of(d)) else { continue };
-                let slot = sev_slot(row);
-                if let Some(text) = row.get(cell_of(slot, i)) {
-                    content =
-                        content.max(sf.measure_tab(cell_face, cell_px, text, cell_track, cell_tab));
+                let mi = model_of(d);
+                if mi >= total {
+                    continue;
+                }
+                model.row(mi, &mut cell_row);
+                let slot = sev_slot(&cell_row);
+                for (i, c) in columns.iter().enumerate() {
+                    if c.width == ColWidth::Content && i != st.elastic {
+                        if let Some(text) = cell_row.get(cell_of(slot, i)) {
+                            let w =
+                                sf.measure_tab(cell_face, cell_px, text, cell_track, cell_tab);
+                            if w > measured[i].content {
+                                measured[i].content = w;
+                            }
+                        }
+                    }
                 }
             }
+            measured
         }
-        measured.push(crate::view::table::ColMeasure {
-            head,
-            content,
-            bar: matches!(c.kind, CellKind::Bar { .. }),
-        });
-    }
+    };
     let widths = crate::view::table::solve_widths(&measured, r.w, st.elastic, overrides, &tokens);
 
     // Every column's width reserved `col_gap + cell_pad` beyond its
@@ -1995,8 +2077,18 @@ pub fn table_surface<S: Surface>(
     // A window that starts part-way down a row needs the body clipped,
     // or the first row paints over the rule above it.
     let clipped = scrolling && sf.clip(Rect::new(r.x, body_y, r.w, body_h));
+    // Reused across the whole window rather than allocated per row — the
+    // same buffer discipline `RowModel::row` asks of a list's reader,
+    // and for the same reason: this loop runs every visible row, every
+    // frame.
+    let mut row_buf: Vec<String> = Vec::new();
     for d in window.first..window.first + window.count {
-        let Some(row) = rows.get(model_of(d)) else { continue };
+        let mi = model_of(d);
+        if mi >= total {
+            continue;
+        }
+        model.row(mi, &mut row_buf);
+        let row: &[String] = &row_buf;
         let row_y = if scrolling { body_y + window.y_of(d, row_h) } else { y };
         let rect = Rect::new(r.x, row_y, r.w, row_h);
         // Zebra follows the DISPLAY position, not the loop counter, so
@@ -2152,6 +2244,17 @@ pub fn table_surface<S: Surface>(
                 crate::view::Hit::Track { id: view_id, toward_end: true },
             );
             h.push(geom.thumb, crate::view::Hit::Thumb { id: view_id });
+        }
+    }
+
+    // The measurement this frame settled on, kept for the next one — only
+    // when it was actually recomputed: a hit that just re-stores what was
+    // already there buys nothing. `order`, `overrides` and `selected_key`
+    // have made their last read by here, which is what frees `state` for
+    // a second, mutable borrow this late in the function.
+    if !measure_was_cached {
+        if let Some(s) = state.as_deref_mut() {
+            s.set_width_cache(width_key, measured);
         }
     }
 }
@@ -2726,5 +2829,113 @@ mod tests {
 
         let after = theme_catalog_named("catalog.winframe.move", "MOVE");
         assert_eq!(&*after, "MOVED", "a reload must invalidate the epoch-gated cache");
+    }
+
+    // ----------------------------------------------------------- table
+
+    /// A table with no `Vec<Vec<String>>` behind it at all: every cell is
+    /// FORMATTED from the row index the moment `row` is asked for it,
+    /// the shape a live `/proc` read or a ring-buffer log tail actually
+    /// takes. `calls` counts every `row` call, so the test below can ask
+    /// the one question the whole of this change exists to answer: does
+    /// drawing this through a small window touch the model roughly
+    /// `window.count` times, or does it — as `rows: &[Vec<String>]`
+    /// always forced — touch it `len()` times regardless of what fits
+    /// on screen.
+    struct LazyRows {
+        total: usize,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl TableModel for LazyRows {
+        fn len(&self) -> usize {
+            self.total
+        }
+
+        fn cols(&self) -> usize {
+            2
+        }
+
+        fn row(&self, index: usize, out: &mut Vec<String>) {
+            self.calls.set(self.calls.get() + 1);
+            out.clear();
+            if index < self.total {
+                out.push(index.to_string());
+                out.push(format!("item-{index}"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_lazy_model_is_touched_about_once_per_visible_row_never_once_per_row_it_has() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut c = ctx(&mut dl, &mut fonts);
+        let cols = vec![
+            Column { title: "IDX".into(), align: Align::Right, kind: CellKind::Text, width: ColWidth::Content },
+            Column { title: "NAME".into(), align: Align::Left, kind: CellKind::Text, width: ColWidth::Content },
+        ];
+        let st = TableStyle { elastic: 1, zebra: false, severity_col: None, shrink: 1.0 };
+        let model = LazyRows { total: 100_000, calls: std::cell::Cell::new(0) };
+        let mut state = crate::view::table::TableState::new();
+        let mut hits = crate::view::Hits::new();
+        let r = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        // The exact window `table_surface` itself will compute, worked
+        // out here through the SAME public arithmetic
+        // (`view::virt::row_window`) rather than guessed at — a fresh
+        // `TableState`'s scroll offset starts at 0, so this is the
+        // window the draw below settles on too.
+        let (row_h, head_gap, head_gap_below) = {
+            let mut probe = CtxSurface::new(&mut c);
+            (probe.px("table.row_h"), probe.px("table.head_gap"), probe.px("table.head_gap_below"))
+        };
+        let body_h = (r.h - head_gap - head_gap_below).max(0.0);
+        let expected = crate::view::virt::row_window(0.0, body_h, row_h, model.total);
+        assert!(
+            expected.count > 0 && expected.count < model.total,
+            "the test window ({}) must show some rows but not all {} of them",
+            expected.count,
+            model.total
+        );
+
+        table_surface(
+            &mut CtxSurface::new(&mut c),
+            r,
+            &cols,
+            &model,
+            &st,
+            Some(TableView {
+                state: &mut state,
+                hits: &mut hits,
+                id: 1,
+                generation: 0,
+                interactive: false,
+                select: false,
+                key_col: None,
+                scroll: true,
+                tooltip: false,
+            }),
+        );
+
+        let calls = model.calls.get();
+        assert!(calls > 0, "the model was never asked for a row");
+        assert!(
+            calls < model.total,
+            "{calls} calls to draw a window of {}: every one of {} rows was touched, which is \
+             not virtualisation",
+            expected.count,
+            model.total
+        );
+        // Two passes over the window and nothing else: the content-width
+        // measure, then the draw. No sort was requested, so
+        // `refresh_order` never reaches the model at all — this is the
+        // "or close to it" the row count allows for, named exactly.
+        assert_eq!(
+            calls,
+            2 * expected.count,
+            "expected one measure pass and one draw pass over the {}-row window",
+            expected.count
+        );
     }
 }
