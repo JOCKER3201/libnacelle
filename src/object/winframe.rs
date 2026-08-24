@@ -36,8 +36,10 @@
 //! [`Action`]: crate::widget::Action
 
 use super::window::{corner_segments, panel_edge_glow};
+use crate::access::{AccessInfo, Role, States};
 use crate::corner::Cuts;
 use crate::draw::Corner;
+use crate::focus::FocusId;
 use crate::theme::parse::State;
 use crate::theme::{self, Color, TokenId};
 use crate::ui;
@@ -908,6 +910,34 @@ pub fn present(ctx: &mut Ctx, r: Rect, open: bool) -> Present {
         0.0,
         ctx.t,
     );
+    // Passive, not focusable — a frame is structural (`crate::access`'s
+    // own doc is why that keeps it off `FocusCtl::register`) — so this
+    // goes through `AccessCtl` instead, on `r`: the RESOLVED rectangle
+    // every hit test in this file already answers against, never
+    // `Present::rect`, for the same reason the doc above gives. `EXPANDED`
+    // / `NONE` mirrors `open`, the one bit of state a `Frame` actually
+    // holds.
+    //
+    // NO NAME REACHES HERE: `present` takes only `r` and `open`, and
+    // `Present` hands back only `alpha` and `rect` — neither carries a
+    // title, so there is nothing to give `AccessInfo::new`'s second
+    // argument. A bridge reads this dialog by role and state alone until
+    // a caller can pass a name in without widening this signature — the
+    // same hole `AccessInfo::new(Role::Slider, "")` and
+    // `AccessInfo::new(Role::TextInput, "")` leave open in slider.rs and
+    // text_input.rs. The id is a literal for the same reason: `present`
+    // draws one frame at a time and has no path of its own to name it by.
+    if let Some(ac) = ctx.access.as_deref_mut() {
+        ac.register(
+            FocusId::of("winframe.root"),
+            r,
+            AccessInfo::new(Role::Dialog, "").with_states(if open {
+                States::EXPANDED
+            } else {
+                States::NONE
+            }),
+        );
+    }
     Present { alpha: a, rect: arrive_rect(r, a) }
 }
 
@@ -1039,6 +1069,116 @@ mod tests {
         f.close_menu();
         assert!(!f.menu_open());
         assert_eq!(f.hit(outer, &m, px, py), Part::Content);
+    }
+
+    // ---- accessibility ----------------------------------------------------
+
+    use crate::access::AccessCtl;
+    use crate::draw::DrawList;
+    use crate::font::FontSystem;
+    use crate::pointer::Pointer;
+
+    /// A bare `Ctx` wired to its own `AccessCtl` and nothing else this
+    /// module's tests need — [`present`] is the only thing under test
+    /// here, and it touches no other field.
+    fn access_ctx<'a>(
+        dl: &'a mut DrawList,
+        fonts: &'a mut FontSystem,
+        ac: &'a mut AccessCtl,
+    ) -> Ctx<'a> {
+        Ctx {
+            access: Some(ac),
+            dl,
+            fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 1000.0,
+            mouse: Pointer::new(-1.0, -1.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: None,
+            tips: None,
+        }
+    }
+
+    /// [`present`] registers a passive `Dialog` node on `r` — the resolved
+    /// rectangle, not the arriving one — every frame it is called,
+    /// `open` or not: a closing window's frame is exactly the one a
+    /// bridge must still see, one last time, to learn it is gone.
+    #[test]
+    fn present_registers_a_passive_dialog_node_on_the_resolved_rect() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut ac = AccessCtl::new();
+        let r = Rect::new(10.0, 20.0, 300.0, 200.0);
+        {
+            let mut ctx = access_ctx(&mut dl, &mut fonts, &mut ac);
+            present(&mut ctx, r, true);
+        }
+        ac.begin_frame();
+        let got: Vec<_> = ac.entries().collect();
+        assert_eq!(got.len(), 1, "present must register exactly one node");
+        let (id, rect, info) = &got[0];
+        assert_eq!(*id, FocusId::of("winframe.root"));
+        for (a, b) in [(rect.x, r.x), (rect.y, r.y), (rect.w, r.w), (rect.h, r.h)] {
+            assert!((a - b).abs() < 0.001, "the registered rect is `r`, not the animated one");
+        }
+        assert_eq!(info.role, Role::Dialog);
+    }
+
+    /// `EXPANDED` / `NONE` mirrors `open` exactly — the one bit of state
+    /// [`Frame`] actually carries — with nothing left ambiguous between
+    /// the two calls a host makes across a window's open and close.
+    #[test]
+    fn present_states_mirror_open_and_closed() {
+        let r = Rect::new(0.0, 0.0, 100.0, 80.0);
+
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut ac = AccessCtl::new();
+        {
+            let mut ctx = access_ctx(&mut dl, &mut fonts, &mut ac);
+            present(&mut ctx, r, true);
+        }
+        ac.begin_frame();
+        let got: Vec<_> = ac.entries().collect();
+        assert!(got[0].2.states.contains(States::EXPANDED));
+
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut ac = AccessCtl::new();
+        {
+            let mut ctx = access_ctx(&mut dl, &mut fonts, &mut ac);
+            present(&mut ctx, r, false);
+        }
+        ac.begin_frame();
+        let got: Vec<_> = ac.entries().collect();
+        assert_eq!(got[0].2.states, States::NONE);
+    }
+
+    /// A caller drawing with no world to report into (a headless test, an
+    /// embedder with no bridge) gets exactly what `tips` and `focus`
+    /// already promise: the call is simply not made.
+    #[test]
+    fn present_with_no_access_ctl_does_not_panic() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut ctx = Ctx {
+            access: None,
+            dl: &mut dl,
+            fonts: &mut fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 1000.0,
+            mouse: Pointer::new(-1.0, -1.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: None,
+            tips: None,
+        };
+        present(&mut ctx, Rect::new(0.0, 0.0, 50.0, 50.0), true);
     }
 
     // ---- face -----------------------------------------------------------
