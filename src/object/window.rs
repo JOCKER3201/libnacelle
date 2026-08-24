@@ -7,7 +7,9 @@
 //! allowed to look raw, which is what keeps every design decision in the
 //! theme files.
 
+use crate::access::{AccessInfo, Role};
 use crate::draw::{Corner, CornerStyle, DrawList};
+use crate::focus::FocusId;
 use crate::font::FontSystem;
 use crate::theme::{self, Color, TokenId};
 use crate::{Ctx, Rect};
@@ -462,9 +464,28 @@ fn level() -> &'static super::elev::Level {
 /// caller so that every window in every application gets it — including
 /// the ones written after this line — and claimed FIRST so the window's
 /// own contents, drawn into it afterwards, keep the pointer.
+///
+/// It is also registered PASSIVE with [`crate::access`] — one of the two
+/// candidate ROOT nodes an AT-SPI tree needs, [`super::winframe`] being
+/// the other. `AccessCtl`, not `FocusCtl`: a window frame is a container a
+/// screen reader should announce, never a Tab stop of its own, and the
+/// two registries exist precisely so a structural node cannot become one
+/// by accident.
 pub fn frame(ctx: &mut Ctx, r: Rect) {
     ctx.mouse.cover(r);
     level().draw(ctx, r);
+    // Registered with an EMPTY name: `frame` takes only `(ctx, r)`, and no
+    // title string reaches it today. Every caller draws its own title
+    // text AFTER calling `frame` instead of handing it in — the toaster
+    // (`toaster.rs`), the layout editor and the settings modal
+    // (nacelle-desktop's `editor.rs` and `settings.rs`) all do this. This
+    // is the same gap the foundation pass left open on `slider.rs` and
+    // `text_input.rs`: filling it in needs a new optional `title: &str`
+    // parameter threaded through `frame` and out to every one of those
+    // call sites, which ripples wider than this file and is its own task.
+    if let Some(ac) = ctx.access.as_deref_mut() {
+        ac.register(FocusId::of("window.root"), r, AccessInfo::new(Role::Window, ""));
+    }
 }
 
 #[cfg(test)]
@@ -649,6 +670,100 @@ mod tests {
             })
             .expect("a window with an opaque body draws one");
         assert!(body.g > 0.99 && body.r < 0.01, "the body {body:?} is not component.panel.fill");
+    }
+
+    /// `frame` registers its box as a PASSIVE `Role::Window` node — one of
+    /// the two candidate AT-SPI roots — and does so through `AccessCtl`,
+    /// never `FocusCtl`: a bridge should announce the box, but Tab must
+    /// never land on it.
+    ///
+    /// The name comes back empty, which is the honest answer today: no
+    /// title string reaches `frame`'s own `(ctx, r)` signature, so there
+    /// is nothing better to hand `AccessInfo::new` yet.
+    #[test]
+    fn frame_registers_a_passive_window_root() {
+        use crate::access::AccessCtl;
+        use crate::pointer::Pointer;
+        let r = box_();
+        let mut dl = DrawList::recording();
+        let mut fonts = FontSystem::new();
+        let mut ac = AccessCtl::new();
+        {
+            let mut ctx = Ctx {
+                access: Some(&mut ac),
+                dl: &mut dl,
+                fonts: &mut fonts,
+                w: 1920.0,
+                h: 1080.0,
+                t: 0.0,
+                mouse: Pointer::new(0.0, 0.0),
+                term_font_scale: 1.0,
+                ui_font_scale: 1.0,
+                panel_scale: 1.0,
+                focus: None,
+                tips: None,
+            };
+            frame(&mut ctx, r);
+        }
+        ac.begin_frame();
+        let got: Vec<_> = ac.entries().collect();
+        assert_eq!(got.len(), 1, "frame registered {} passive nodes, not one", got.len());
+        let (id, rect, info) = &got[0];
+        assert_eq!(*id, FocusId::of("window.root"));
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (r.x, r.y, r.w, r.h));
+        assert_eq!(info.role, Role::Window);
+        assert_eq!(info.name, "", "no title reaches `frame` today; the gap is left in a comment");
+    }
+
+    /// `ctx.access` stays `None` in most of this file's own tests (and in
+    /// every caller that draws headless), and `frame` must not need it:
+    /// the registration is a `map` over an `Option`, so drawing without an
+    /// accessibility tree draws exactly the same picture as drawing with
+    /// one wired up.
+    #[test]
+    fn frame_draws_the_same_picture_whether_or_not_access_is_wired_up() {
+        use crate::access::AccessCtl;
+        use crate::pointer::Pointer;
+        let r = box_();
+
+        let mut wired = DrawList::recording();
+        let mut wired_fonts = FontSystem::new();
+        let mut ac = AccessCtl::new();
+        let mut ctx = Ctx {
+            access: Some(&mut ac),
+            dl: &mut wired,
+            fonts: &mut wired_fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 0.0,
+            mouse: Pointer::new(0.0, 0.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: None,
+            tips: None,
+        };
+        frame(&mut ctx, r);
+
+        let mut bare = DrawList::recording();
+        let mut bare_fonts = FontSystem::new();
+        let mut ctx = Ctx {
+            access: None,
+            dl: &mut bare,
+            fonts: &mut bare_fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 0.0,
+            mouse: Pointer::new(0.0, 0.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: None,
+            tips: None,
+        };
+        frame(&mut ctx, r);
+
+        same_picture(&wired, &bare);
     }
 
     // ------------------------------------------------- the lit tube
