@@ -14,6 +14,8 @@
 //! the engine's per-kind default and is allowed to look raw.
 
 use super::elev;
+use crate::access::{AccessInfo, Role};
+use crate::focus::FocusId;
 use crate::font::Figures;
 use crate::theme::{self, Color, TokenId};
 use crate::ui;
@@ -216,6 +218,25 @@ fn report_step(panel: usize, step: u8) {
 pub fn draw(ctx: &mut Ctx, r: Rect, chrome: &Chrome, panel_idx: usize) -> Rect {
     let titled = chrome.title.is_some() || chrome.right.is_some();
     let placed = place(r, titled);
+
+    // A passive landmark, not a Tab stop: FocusCtl::register is
+    // deliberately never called here (a panel container is not a
+    // focusable control), but AccessCtl is a second, structural-only
+    // registry a bridge can still read from, so a screen reader gets
+    // "you are in the <title> panel" even without one. This does not
+    // model the panel's CONTENT as children of this node — full
+    // parent/child nesting is a known simplification left for later,
+    // not an oversight; see `crate::access`'s module header for why the
+    // two registries are kept apart.
+    if let Some(title) = chrome.title.as_deref() {
+        if let Some(ac) = ctx.access.as_deref_mut() {
+            ac.register(
+                FocusId::of(&format!("panel.{panel_idx}")),
+                r,
+                AccessInfo::new(Role::Group, title),
+            );
+        }
+    }
 
     // Material, ring, and family A's bloom over the ring — read as a
     // whole rung rather than key by key, and the rung is the one
@@ -745,6 +766,71 @@ pub(crate) mod tests {
             drawn[1].1
         );
         report(&role_word("panel.title.role"), want, &drawn);
+    }
+
+    // ------------------------------------------------- passive a11y landmark
+
+    /// Builds a bare `Ctx` wired to a live `AccessCtl`, draws one panel
+    /// into it, and answers what a bridge would read back after the
+    /// frame closes. Kept separate from [`drawn_runs`] (which always
+    /// hands `draw` an `access: None` Ctx) because most callers of that
+    /// harness have nothing to do with the structural registry, and
+    /// giving every one of them a live `AccessCtl` they never read would
+    /// be the thing this file's own tests exist to avoid: a check that
+    /// looks like coverage but proves nothing about the field under
+    /// test.
+    fn drawn_access_entries(
+        chrome: &Chrome,
+        r: Rect,
+        panel_idx: usize,
+    ) -> Vec<(FocusId, AccessInfo)> {
+        crate::draw::arm_cmds();
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut ac = crate::access::AccessCtl::new();
+        {
+            let mut ctx = Ctx {
+                access: Some(&mut ac),
+                dl: &mut dl,
+                fonts: &mut fonts,
+                w: 1920.0,
+                h: 1080.0,
+                t: 1000.0,
+                mouse: Pointer::new(-1.0, -1.0),
+                term_font_scale: 1.0,
+                ui_font_scale: 1.0,
+                panel_scale: 1.0,
+                focus: None,
+                tips: None,
+            };
+            draw(&mut ctx, r, chrome, panel_idx);
+        }
+        ac.begin_frame();
+        ac.entries().map(|(id, _, info)| (id, info.clone())).collect()
+    }
+
+    /// A titled panel registers itself as a `Role::Group` landmark under
+    /// `panel.<panel_idx>` — not a Tab stop (this never goes through
+    /// `FocusCtl::register`), but enough for a bridge to say "you are in
+    /// the <title> panel" while the widget it contains still has no
+    /// modeled parent/child link to this node.
+    #[test]
+    fn a_titled_panel_registers_a_passive_group_landmark() {
+        let chrome = Chrome { title: Some("Files".to_string()), ..Chrome::none() };
+        let got = drawn_access_entries(&chrome, Rect::new(0.0, 0.0, 300.0, 200.0), 3);
+        assert_eq!(got.len(), 1, "exactly one structural landmark per panel: {got:?}");
+        assert_eq!(got[0].0, FocusId::of("panel.3"));
+        assert_eq!(got[0].1.role, Role::Group);
+        assert_eq!(got[0].1.name, "Files");
+    }
+
+    /// An untitled panel — no `chrome.title` — has nothing worth
+    /// announcing as a landmark and registers nothing, whether or not
+    /// `ctx.access` is wired up.
+    #[test]
+    fn an_untitled_panel_registers_nothing() {
+        let got = drawn_access_entries(&Chrome::none(), Rect::new(0.0, 0.0, 300.0, 200.0), 0);
+        assert!(got.is_empty(), "no title, no landmark: {got:?}");
     }
 
     // ---------------------------------------------------- the trim marker
