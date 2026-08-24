@@ -2,7 +2,7 @@
 //! plus a label. The whole row is the click target.
 
 use super::focus_ring;
-use crate::access::{AccessInfo, Role};
+use crate::access::{AccessInfo, Role, States};
 use crate::corner::Cuts;
 use crate::draw::Corner;
 use crate::focus::{Caps, FocusId};
@@ -164,6 +164,13 @@ pub fn draw(ctx: &mut Ctx, row: Rect, label: &str, checked: bool, hover: bool) {
 /// the pointer hits. A checkbox eats no keys (toggling is the router's
 /// Space/Enter), and focus never feeds `hover` — the ring is the only
 /// focus signal.
+///
+/// The accessible report carries `checked` straight through as
+/// [`States::CHECKED`] — a screen reader's "checked" is this same bool,
+/// not a derived guess, so there is nothing to keep in sync. There is no
+/// `disabled` here to mirror into [`States::DISABLED`]: this function
+/// takes no such flag, and inventing one only to feed the bit would be a
+/// parameter this widget does not otherwise have.
 pub fn draw_focusable(
     ctx: &mut Ctx,
     row: Rect,
@@ -172,10 +179,9 @@ pub fn draw_focusable(
     hover: bool,
     id: FocusId,
 ) {
-    let f = ctx
-        .focus
-        .as_deref_mut()
-        .map(|fc| fc.register(id, row, Caps::NONE, AccessInfo::new(Role::CheckBox, label)));
+    let states = if checked { States::CHECKED } else { States::NONE };
+    let access = AccessInfo::new(Role::CheckBox, label).with_states(states);
+    let f = ctx.focus.as_deref_mut().map(|fc| fc.register(id, row, Caps::NONE, access));
     draw(ctx, row, label, checked, hover);
     focus_ring::draw_faded(ctx, row, f.map_or(false, |f| f.ring));
 }
@@ -519,5 +525,48 @@ mod tests {
             crate::ui::role("data").px(&ctx(&mut DrawList::new(), &mut fonts), 1.0),
             "the row kept `body`'s size after the binding moved to `data`"
         );
+    }
+
+    // -------------------------------------------------------- accessibility
+    //
+    // `checked` is the one bit the accessible report has to carry, because
+    // it is the one bit a screen reader cannot see any other way: unlike
+    // a button's label or a slider's value, nothing in the checkbox's own
+    // rect tells a bridge whether the box is ticked.
+
+    /// The state a `draw_focusable` registration carries for `id`, read
+    /// back through [`crate::focus::FocusCtl::entries`] the same way a
+    /// bridge would — not the `AccessInfo` this file built, which would
+    /// prove only that the file agrees with itself.
+    fn registered_states(checked: bool) -> crate::access::States {
+        use crate::focus::FocusCtl;
+        let mut fc = FocusCtl::new();
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let id = FocusId::of("a11y-checkbox-under-test");
+        {
+            let mut c = ctx(&mut dl, &mut fonts);
+            c.focus = Some(&mut fc);
+            draw_focusable(&mut c, ROW, "Label", checked, false, id);
+        }
+        fc.begin_frame();
+        let states = fc
+            .entries()
+            .find(|(eid, ..)| *eid == id)
+            .map(|(_, _, info)| info.states)
+            .expect("draw_focusable did not register an accessible entry");
+        states
+    }
+
+    #[test]
+    fn a_checked_box_reports_the_checked_state() {
+        assert_eq!(registered_states(true), crate::access::States::CHECKED);
+    }
+
+    #[test]
+    fn an_unchecked_box_reports_no_states() {
+        // Not "everything but CHECKED" — this widget has nothing else to
+        // report, so the honest answer for `checked: false` is NONE.
+        assert_eq!(registered_states(false), crate::access::States::NONE);
     }
 }
