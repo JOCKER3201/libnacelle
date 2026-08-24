@@ -126,10 +126,115 @@ pub fn track(ctx: &mut Ctx, track: Rect, t: f32) {
 /// value instead of navigating — the router dispatches them to the
 /// caller's value logic. Tab still leaves. The ring wraps the track
 /// rect the caller already hit-tests.
+///
+/// The `AccessInfo` built here carries no name: the caller draws its own
+/// label beside the track (see the module header) and no string reaches
+/// this far down to fill it. The position still reaches a screen reader
+/// through `with_value` — a percentage read out with an empty name beats
+/// the total silence an unnamed, unvalued slider would otherwise get. A
+/// caller that holds a real label should thread it into the `AccessInfo`
+/// built here once a labeled variant of this function exists; until
+/// then, the empty name is a known gap, not a silent one.
 pub fn track_focusable(ctx: &mut Ctx, r: Rect, t: f32, id: FocusId) {
     let f = ctx.focus.as_deref_mut().map(|fc| {
-        fc.register(id, r, Caps::GREEDY_ARROWS, AccessInfo::new(Role::Slider, ""))
+        fc.register(
+            id,
+            r,
+            Caps::GREEDY_ARROWS,
+            AccessInfo::new(Role::Slider, "").with_value(format!("{:.0}%", t * 100.0)),
+        )
     });
     track(ctx, r, t);
     focus_ring::draw_faded(ctx, r, f.map_or(false, |f| f.ring));
+}
+
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw::DrawList;
+    use crate::focus::FocusCtl;
+    use crate::font::FontSystem;
+    use crate::pointer::Pointer;
+
+    const TRACK: Rect = Rect { x: 40.0, y: 120.0, w: 200.0, h: 20.0 };
+
+    fn ctx<'a>(dl: &'a mut DrawList, fonts: &'a mut FontSystem, fc: &'a mut FocusCtl) -> Ctx<'a> {
+        Ctx {
+            access: None,
+            dl,
+            fonts,
+            w: 1920.0,
+            h: 1080.0,
+            t: 0.0,
+            mouse: Pointer::new(0.0, 0.0),
+            term_font_scale: 1.0,
+            ui_font_scale: 1.0,
+            panel_scale: 1.0,
+            focus: Some(fc),
+            tips: None,
+        }
+    }
+
+    /// No label reaches this file (see the doc comment on
+    /// `track_focusable`), so the name is empty — but the position must
+    /// not go silent along with it: a bridge still gets `t` read out as
+    /// a whole-number percentage through `AccessInfo::value`.
+    #[test]
+    fn track_focusable_reports_position_as_value_with_empty_name() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        let id = FocusId::of("volume");
+        {
+            let mut c = ctx(&mut dl, &mut fonts, &mut fc);
+            track_focusable(&mut c, TRACK, 0.5, id);
+        }
+        fc.begin_frame();
+        let got: Vec<_> = fc.entries().collect();
+        assert_eq!(got.len(), 1);
+        let (got_id, _, info) = got[0];
+        assert_eq!(got_id, id);
+        assert_eq!(info.role, Role::Slider);
+        assert_eq!(info.name, "");
+        assert_eq!(info.value.as_deref(), Some("50%"));
+    }
+
+    /// The value is rounded to the nearest whole percent, not truncated
+    /// or carried at full float precision — a screen reader wants "33%",
+    /// not "33.33333%".
+    #[test]
+    fn track_focusable_value_rounds_to_whole_percent() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        let id = FocusId::of("brightness");
+        {
+            let mut c = ctx(&mut dl, &mut fonts, &mut fc);
+            track_focusable(&mut c, TRACK, 0.333, id);
+        }
+        fc.begin_frame();
+        let got: Vec<_> = fc.entries().collect();
+        assert_eq!(got[0].2.value.as_deref(), Some("33%"));
+    }
+
+    /// `t` is the function's own already-clamped-at-draw-time parameter;
+    /// the value string reflects the raw input, including a caller that
+    /// hands in an out-of-range `t` before `track`'s own clamp runs —
+    /// documenting current behaviour, not prescribing it.
+    #[test]
+    fn track_focusable_value_follows_unclamped_t() {
+        let mut dl = DrawList::new();
+        let mut fonts = FontSystem::new();
+        let mut fc = FocusCtl::new();
+        let id = FocusId::of("over");
+        {
+            let mut c = ctx(&mut dl, &mut fonts, &mut fc);
+            track_focusable(&mut c, TRACK, 1.2, id);
+        }
+        fc.begin_frame();
+        let got: Vec<_> = fc.entries().collect();
+        assert_eq!(got[0].2.value.as_deref(), Some("120%"));
+    }
 }
