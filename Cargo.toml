@@ -48,6 +48,42 @@ rhai = { version = "1.25.1", default-features = false, features = ["std", "sync"
 # Wall clock for widgets that show the time
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# SVG -> coverage-mask rasterization for the icon atlas (src/icon.rs, K8).
+# `resvg` re-exports `usvg` (parse) and `tiny-skia` (raster), which is why
+# it is the one entry here rather than three.
+#
+# Pinned at 0.45.1 and not the crate's current default (0.48.x) for two
+# reasons found by checking the crate's OWN history rather than its name,
+# per this project's hard rule (MIT/Apache/BSD only, for anything linked):
+#
+# * `resvg` changed OWNER and LICENCE mid-series. Every version through
+#   0.44.0, published under `RazrFalcon/resvg`, carries `license = "MPL-2.0"`
+#   — a per-file copyleft this project's rule excludes. `linebender/resvg`
+#   picked the project up at 0.45.0 and relicensed the whole tree dual
+#   `MIT OR Apache-2.0`; every version from 0.45.0 on states that licence.
+#   A caller trusting the crate NAME instead of the crate's own metadata
+#   at the version it pins would have linked MPL-2.0 code and never known.
+# * 0.45.1 is the oldest of the relicensed line, and its own
+#   `rust-version` is 1.67.1 — under this crate's `rust-version = "1.77"`.
+#   0.46.0 raised it to 1.87.0, past what this crate promises; taking the
+#   newer resvg would either break that promise or force it up silently.
+#
+# `default-features = false`: the defaults (`text`, `system-fonts`,
+# `memmap-fonts`, `raster-images`) pull `fontdb`/`rustybuzz` (SVG <text>
+# shaped against the system's fonts) and raster-image decoders this
+# project's icons have no use for — an icon is a flat vector shape, the
+# same assumption every icon SET in the wild makes. Turning them off
+# keeps the dependency to `usvg`'s vector core and `tiny-skia`'s
+# rasteriser, both permissively licensed themselves (checked at the same
+# pin: `usvg` 0.45.1 `MIT OR Apache-2.0`, `tiny-skia` 0.12.0
+# `BSD-3-Clause`, and every crate either pulls in transitively —
+# `svgtypes`, `roxmltree`, `kurbo`, `data-url`, `flate2`, `base64`,
+# `xmlwriter`, `simplecss`, `siphasher`, `strict-num`, `imagesize`,
+# `once_cell`, `pico-args`, `png`, `rgb`, `log` — MIT, Apache-2.0 or both).
+#
+# Verdict: CLEAR at 0.45.1, default-features = false.
+resvg = { version = "=0.45.1", default-features = false }
+
 [dev-dependencies]
 # The derive is only ever used by tests here — the toolkit deserialises
 # nothing of its own, it hands `settings::load` an addon's type. Keeping

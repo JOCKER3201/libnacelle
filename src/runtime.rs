@@ -710,6 +710,52 @@ pub struct HostApi {
         glow_radius: f32,
         c: ColorC,
     ),
+
+    // ------------------------------------------------------------------
+    // SVG icons (K8): a coverage mask per icon, packed into the SAME
+    // atlas glyphs already share, never a distance field per icon — see
+    // `crate::icon`'s own doc comment for why. `icon_register` and
+    // `icon_quad` are gated by ONE entry, [`HostApi::has_icon`], because
+    // a plugin that could ask for an id and never draw it — or draw an
+    // id it could never ask for — is the clip pair's argument again in
+    // the same costume: a half-present mechanism is worse than an
+    // absent one.
+    // ------------------------------------------------------------------
+    /// Interns `name` to a stable icon id and registers `svg` under it —
+    /// [`crate::font::FontSystem::icon_id`] across the boundary. `name`
+    /// and `svg` are both UTF-8/bytes WITH a length, not C strings, so an
+    /// icon set can ship binary SVG (a BOM, embedded raw bytes) without
+    /// the boundary caring. Answers the id, or `u32::MAX` when `svg`
+    /// failed to parse or `name` is not valid UTF-8 — `u32::MAX` is never
+    /// a real id, because [`crate::font::FontSystem`] hands ids out from
+    /// zero and stops long before wrapping.
+    ///
+    /// Init-time, exactly like [`HostApi::theme_token`]: the first call
+    /// for a given `name` parses the SVG; every call after is a hashmap
+    /// lookup that ignores `svg` entirely (see that method's own doc
+    /// comment for why re-registering under the SAME name is a
+    /// [`HostApi::icon_register`] with the id already answered, not a
+    /// second call to this one) — so a widget still calls it once, at
+    /// init, and caches the id, rather than paying a lookup a frame for
+    /// no reason.
+    pub icon_register: extern "C" fn(
+        ctx: *mut c_void,
+        name: *const u8,
+        name_len: u32,
+        svg: *const u8,
+        svg_len: u32,
+    ) -> u32,
+    /// Draws icon `id` at raster size `px`, into the four corners `pts`
+    /// (eight floats, exactly like [`HostApi::quad`]), tinted by `c`.
+    /// The mapping from `id` to atlas UVs happens on the HOST side of
+    /// the boundary, in [`crate::draw::DrawList::icon_quad`] — a plugin
+    /// names an id, never a texel, the same discipline
+    /// [`HostApi::mask_quad`] already keeps for the soft-mask sprite.
+    ///
+    /// An unregistered `id`, `px == 0`, or an atlas with no room this
+    /// frame all draw nothing and are not errors: try again next frame,
+    /// the same degradation an atlas-full glyph already has.
+    pub icon_quad: extern "C" fn(ctx: *mut c_void, id: u32, px: f32, pts: *const f32, c: ColorC),
 }
 
 /// The longest topic name the channel accepts. A name is a constant in
@@ -829,6 +875,14 @@ pub const HOST_API_HAS_THEME_TEXT: usize =
 pub const HOST_API_HAS_RING_GLOW: usize =
     std::mem::offset_of!(HostApi, ring_glow) + std::mem::size_of::<usize>();
 
+/// The prefix that includes BOTH icon entries (K8). One gate for the
+/// pair, like the clips, the rings, the channel and the settings pair
+/// above it: a plugin that could register an icon and never draw it, or
+/// draw an id it could never have registered, is the same half-present
+/// mechanism those comments already name.
+pub const HOST_API_HAS_ICON: usize =
+    std::mem::offset_of!(HostApi, icon_quad) + std::mem::size_of::<usize>();
+
 /// [`HostApi::mask_quad`]: blend additively — the quad adds light, the
 /// way the host's own glow does. Without it the quad covers, the way its
 /// shadows do.
@@ -900,6 +954,15 @@ impl HostApi {
     /// built out of [`HostApi::mask_quad`] by hand.
     pub fn has_ring_glow(&self) -> bool {
         self.api_size as usize >= HOST_API_HAS_RING_GLOW
+    }
+
+    /// Whether this host answers [`HostApi::icon_register`] and
+    /// [`HostApi::icon_quad`] (K8). Absent: a plugin draws whatever
+    /// stand-in it already drew before an icon system existed — the
+    /// launcher's initial-letter mark, unchanged — rather than calling
+    /// either entry and reading garbage out of an old host's table.
+    pub fn has_icon(&self) -> bool {
+        self.api_size as usize >= HOST_API_HAS_ICON
     }
 
     /// A text token by NAME, resolved and copied out — the plugin-side

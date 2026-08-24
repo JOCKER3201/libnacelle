@@ -8,6 +8,9 @@
 //! * [`sdf`] — the CPU reference of the vector core's distance field:
 //!   the formulas the renderer's `fs_shape` computes, provable without
 //!   a GPU.
+//! * [`icon`] — SVG icons, rasterized once into a coverage mask and
+//!   packed into [`font::FontSystem`]'s shared atlas beside the glyphs
+//!   — not a distance field per icon (K8).
 //! * [`base`] — geometry, the drawing context, the panel model and the
 //!   widget registry. Re-exported at the root, so `nacelle::Rect` works.
 //! * [`flex`] — the responsive layout engine (the algorithm web pages
@@ -67,6 +70,7 @@ pub mod layout;
 pub use layout::flex;
 pub mod focus;
 pub mod font;
+pub mod icon;
 pub mod motion;
 pub mod num;
 pub mod object;
