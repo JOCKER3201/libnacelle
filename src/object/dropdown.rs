@@ -108,7 +108,7 @@
 
 use super::button::ButtonState;
 use super::focus_ring;
-use crate::access::{AccessInfo, Role};
+use crate::access::{AccessInfo, Role, States};
 use crate::focus::{Caps, FocusId};
 use crate::theme::{self, Color, TokenId};
 use crate::view::paint;
@@ -363,7 +363,25 @@ pub fn accordion(
         let full = shown.h >= item_h - 0.5 && shown.w >= row_w - 0.5;
         if at_rest && full {
             if let (Some(base), Some(fc)) = (style.focus, ctx.focus.as_deref_mut()) {
-                let access = AccessInfo::new(Role::ComboBox, name.as_str());
+                // EXPANDED is not a per-element toggle, it is the same
+                // fact repeated at every element that reaches this branch:
+                // `at_rest` is this file's own bool for "the blind has
+                // stopped moving, this is a list and not still an
+                // animation" (see the comment above its declaration), and
+                // an element only registers once that is true. So every
+                // entry a bridge sees from this loop is honestly reporting
+                // that the set it belongs to is open — SELECTED marks the
+                // one element already in force, the same comparison
+                // `ButtonState.selected` below draws with, and the index
+                // is this element's 1-based place among `names.len()`
+                // siblings, so a screen reader can say "item 2 of 7".
+                let mut states = States::EXPANDED;
+                if style.current == Some(i) {
+                    states = states | States::SELECTED;
+                }
+                let access = AccessInfo::new(Role::ComboBox, name.as_str())
+                    .with_states(states)
+                    .with_index(i as u32 + 1, names.len() as u32);
                 if fc.register(base.item(i), shown, Caps::NONE, access).ring {
                     ring = Some(shown);
                 }
