@@ -33,7 +33,7 @@ const W: f32 = 1920.0;
 const H: f32 = 1080.0;
 const BOX: Rect = Rect { x: 200.0, y: 120.0, w: 640.0, h: 360.0 };
 
-/// A halo distinct from the master's own resting one (1.6u at 0.34,
+/// A halo distinct from the master's own resting one (4u at 0.34,
 /// 2026-08-23) in both numbers, so a comparison against it is a
 /// comparison against a fixture's OWN values and not an accident of
 /// matching the master's by construction.

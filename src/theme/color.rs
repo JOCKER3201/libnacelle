@@ -213,25 +213,44 @@ impl Color {
     /// OKLCh -> linear-light sRGB, **gamut-mapped**: L and hue are held exactly
     /// and chroma is bisected down (22 iterations) until every channel is inside
     /// [0,1]. §6.2, mandatory and automatic.
+    ///
+    /// The body is [`gamut_map`]'s, called with the fixed-matrix sRGB
+    /// candidate — the SAME closure this function always evaluated, so a
+    /// caller here sees bit-for-bit the colour it always did; only
+    /// [`Color::from_oklch_in`] and [`Color::max_chroma_in`] below are new,
+    /// and neither is on this call's path.
     pub fn from_oklch(v: Oklch) -> Self {
-        let l = v.l.clamp(0.0, 1.0);
-        let c0 = v.c.max(0.0);
-        let at = |c: f32| Self::from_oklab_unmapped(Oklch { l, c, h: v.h, alpha: v.alpha }.to_oklab());
-        let top = at(c0);
-        if in_gamut(top) {
-            return Color { a: v.alpha.clamp(0.0, 1.0), ..top.clamped() };
-        }
-        // C = 0 is always in gamut for L in [0,1], so the bisection is total.
-        let (mut lo, mut hi) = (0.0f32, c0);
-        for _ in 0..22 {
-            let mid = 0.5 * (lo + hi);
-            if in_gamut(at(mid)) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        Color { a: v.alpha.clamp(0.0, 1.0), ..at(lo).clamped() }
+        gamut_map(v.l, v.c, v.h, v.alpha, Self::from_oklab_unmapped).0
+    }
+
+    /// [`Color::from_oklch`], generalised to an arbitrary target gamut's own
+    /// primaries. `in_gamut` and the 22-step bisection are [`gamut_map`]'s,
+    /// shared with [`Color::from_oklch`] and untouched; only the candidate
+    /// colour — OKLab routed through [`Primaries::xyz_to_linear_rgb`] instead
+    /// of the fixed sRGB matrices — differs.
+    ///
+    /// General-purpose gamut-aware colour conversion: no caller in this tree
+    /// uses it today (the picker's own gamut-boundary triangle is drawn from
+    /// [`Primaries::in_srgb_basis`] instead, which needs none of this
+    /// function's bisection), but it and [`Color::max_chroma_in`] below are
+    /// the correct tool the day something DOES need "this OKLCh colour,
+    /// mapped into a named wide gamut rather than sRGB" — kept and tested
+    /// rather than removed on the strength of that.
+    pub fn from_oklch_in(v: Oklch, p: &Primaries) -> Self {
+        gamut_map(v.l, v.c, v.h, v.alpha, |ok| Self::from_oklab_unmapped_in(ok, p)).0
+    }
+
+    /// The widest chroma a gamut can hold at a given lightness and hue —
+    /// [`gamut_map`]'s OWN bisection answer, which [`Color::from_oklch`] has
+    /// always computed and thrown away. `CHROMA_CEILING` stands in for "as
+    /// far out as the caller could possibly have asked", safely past any
+    /// named space's real maximum (sRGB's is under 0.32, BT.2020's under
+    /// 0.46 at their respective widest hues), so the bisection's own answer
+    /// IS the gamut's boundary at this `l`/`h` and not merely an echo of
+    /// whatever chroma was asked for.
+    pub fn max_chroma_in(l: f32, h: f32, p: &Primaries) -> f32 {
+        const CHROMA_CEILING: f32 = 0.5;
+        gamut_map(l, CHROMA_CEILING, h, 1.0, |ok| Self::from_oklab_unmapped_in(ok, p)).1
     }
 
     /// The extended-range escape hatch (§6.2, last paragraph): where the
@@ -239,6 +258,18 @@ impl Color {
     /// belongs to the output stage and not to the derivation.
     pub fn from_oklch_unmapped(v: Oklch) -> Self {
         Self::from_oklab_unmapped(v.to_oklab())
+    }
+
+    /// [`Color::from_oklab_unmapped`], routed through an arbitrary target
+    /// gamut's own primaries instead of the fixed sRGB matrices — the only
+    /// thing that differs between the two, per [`Primaries`]'s own doc.
+    /// **Not** gamut-mapped, same promise `from_oklab_unmapped` makes: a
+    /// caller that will show the result on screen goes through
+    /// [`Color::from_oklch_in`] instead.
+    pub fn from_oklab_unmapped_in(v: Oklab, p: &Primaries) -> Self {
+        let xyz = oklab_to_xyz(v);
+        let rgb = mul_mat_vec(p.xyz_to_linear_rgb(), xyz);
+        Color { r: rgb[0], g: rgb[1], b: rgb[2], a: v.alpha }
     }
 
     // ------------------------------------------------------------ contrast
@@ -348,6 +379,256 @@ impl Oklch {
 fn in_gamut(c: Color) -> bool {
     const E: f32 = 1e-4;
     (-E..=1.0 + E).contains(&c.r) && (-E..=1.0 + E).contains(&c.g) && (-E..=1.0 + E).contains(&c.b)
+}
+
+/// The chroma-reduction bisection §6.2 states, factored out so
+/// [`Color::from_oklch`] and [`Color::from_oklch_in`] run the SAME 22
+/// steps against the SAME `in_gamut` test — a candidate colour is the
+/// only thing that differs between an sRGB picker and one asking after a
+/// wider gamut, so `to_linear` is a closure and every line below is
+/// §6.2's original body, unchanged since before this function had a name.
+///
+/// Returns the mapped, clamped colour AND the chroma the bisection landed
+/// on. [`Color::from_oklch`] wants only the first half of that pair — it
+/// is what it has always returned — and [`Color::max_chroma_in`] wants
+/// only the second, which is why both ride home together instead of one
+/// being computed twice under two names.
+fn gamut_map(l: f32, c0: f32, h: f32, alpha: f32, to_linear: impl Fn(Oklab) -> Color) -> (Color, f32) {
+    let l = l.clamp(0.0, 1.0);
+    let c0 = c0.max(0.0);
+    let at = |c: f32| to_linear(Oklch { l, c, h, alpha }.to_oklab());
+    let top = at(c0);
+    if in_gamut(top) {
+        return (Color { a: alpha.clamp(0.0, 1.0), ..top.clamped() }, c0);
+    }
+    // C = 0 is always in gamut for L in [0,1]: the achromatic axis is the
+    // SAME OKLab point (a = b = 0) whichever gamut's own primaries
+    // `to_linear` routes it through, and every named gamut here shares the
+    // D65 white point that axis walks toward — so the bisection is total
+    // for every space this module builds a [`Primaries`] for, not only sRGB.
+    let (mut lo, mut hi) = (0.0f32, c0);
+    for _ in 0..22 {
+        let mid = 0.5 * (lo + hi);
+        if in_gamut(at(mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (Color { a: alpha.clamp(0.0, 1.0), ..at(lo).clamped() }, lo)
+}
+
+// ------------------------------------------------------------ wide gamuts
+
+/// A target RGB space's own chromaticity primaries (CIE 1931 xy) and white
+/// point — what [`Color::from_oklch`]'s fixed sRGB matrices generalise
+/// into once the picker has to draw a boundary for a gamut that is not
+/// sRGB. All four named spaces below share the D65 white point, which is
+/// what lets [`gamut_map`]'s "chroma zero is always in gamut" argument
+/// hold for every one of them without restating it per space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Primaries {
+    pub r: (f32, f32),
+    pub g: (f32, f32),
+    pub b: (f32, f32),
+    pub white: (f32, f32),
+}
+
+impl Primaries {
+    pub const SRGB: Primaries =
+        Primaries { r: (0.6400, 0.3300), g: (0.3000, 0.6000), b: (0.1500, 0.0600), white: (0.3127, 0.3290) };
+    pub const DISPLAY_P3: Primaries =
+        Primaries { r: (0.6800, 0.3200), g: (0.2650, 0.6900), b: (0.1500, 0.0600), white: (0.3127, 0.3290) };
+    pub const ADOBE_RGB: Primaries =
+        Primaries { r: (0.6400, 0.3300), g: (0.2100, 0.7100), b: (0.1500, 0.0600), white: (0.3127, 0.3290) };
+    pub const BT2020: Primaries =
+        Primaries { r: (0.7080, 0.2920), g: (0.1700, 0.7970), b: (0.1310, 0.0460), white: (0.3127, 0.3290) };
+
+    /// This space's own CIE XYZ (D65) -> linear-light RGB matrix, built
+    /// from its primaries and white point the standard way (Bruce
+    /// Lindbloom's derivation, "RGB/XYZ Matrices"): each primary's own XYZ
+    /// is its chromaticity's `(x/y, 1, (1-x-y)/y)`, the three are scaled so
+    /// together they reproduce the white point exactly, and the RGB -> XYZ
+    /// matrix that gives is inverted.
+    ///
+    /// Computed on every call rather than cached: a 3x3 invert is a dozen
+    /// multiplies, this is asked for once per spoke of the picker's curve
+    /// (tens of times a frame, not thousands), and a cache keyed on which
+    /// of four `const` values was asked for would be more code than the
+    /// arithmetic it is saving.
+    fn xyz_to_linear_rgb(&self) -> [[f32; 3]; 3] {
+        let col = |xy: (f32, f32)| -> [f32; 3] {
+            let (x, y) = xy;
+            [x / y, 1.0, (1.0 - x - y) / y]
+        };
+        let (cr, cg, cb) = (col(self.r), col(self.g), col(self.b));
+        // Columns are the three primaries' own XYZ, unscaled.
+        let unscaled = [[cr[0], cg[0], cb[0]], [cr[1], cg[1], cb[1]], [cr[2], cg[2], cb[2]]];
+        let s = mul_mat_vec(invert3(unscaled), col(self.white));
+        let rgb_to_xyz = [
+            [unscaled[0][0] * s[0], unscaled[0][1] * s[1], unscaled[0][2] * s[2]],
+            [unscaled[1][0] * s[0], unscaled[1][1] * s[1], unscaled[1][2] * s[2]],
+            [unscaled[2][0] * s[0], unscaled[2][1] * s[1], unscaled[2][2] * s[2]],
+        ];
+        invert3(rgb_to_xyz)
+    }
+
+    /// A chromaticity `xy` — any space's own primary, not necessarily
+    /// `self`'s — decomposed as a WEIGHT TRIPLE in **sRGB's own** r/g/b
+    /// basis: `[x/y, 1, (1-x-y)/y]` (that chromaticity's own XYZ at Y = 1)
+    /// run through [`Primaries::SRGB`]'s [`xyz_to_linear_rgb`], unclamped —
+    /// a component going negative is exactly `xy` lying outside sRGB's own
+    /// triangle, which is the question this function exists to answer.
+    ///
+    /// [`xyz_to_linear_rgb`]: Primaries::xyz_to_linear_rgb
+    ///
+    /// WHAT THIS WAS FOR, AND WHY IT STAYS ANYWAY. Until the picker's
+    /// slider-bank rewrite (2026-08-24) the colour picker's gamut-boundary
+    /// triangle (`object::color_picker::draw`) placed a wide gamut's own
+    /// primaries
+    /// on a wheel whose hue and saturation ARE `rgb_to_hsv` of an
+    /// sRGB-encoded colour — hue 0/120/240° are sRGB's own red/green/blue
+    /// by that function's construction, and saturation 1 is sRGB's own
+    /// edge (the module header there, "HSV AND NOT OKLCh", is the ruling
+    /// this leans on). Running a target primary's `xy` through THIS matrix
+    /// and then through THAT SAME `rgb_to_hsv` asks one coherent question —
+    /// "what hue and saturation would this chromaticity read as, in the
+    /// terms the wheel already speaks?" — with the wheel's own law, not a
+    /// second one invented for the curve alone.
+    ///
+    /// TWO ANCHORS FALL OUT OF THE SAME ARITHMETIC, NOT A SPECIAL CASE FOR
+    /// EITHER — READ IN `rgb_to_hsv` TERMS, WHICH IS THE ONLY TERM THAT
+    /// MATTERS HERE, since hue and saturation are what a caller does with
+    /// this triple next and both are invariant to a positive uniform
+    /// rescale. Feed sRGB's own red back in: this function passes the
+    /// chromaticity through at a FIXED `Y = 1`, not through the same
+    /// per-primary scale [`xyz_to_linear_rgb`]'s own matrix was built with
+    /// (the `s` in that method's body), so the weight triple back is
+    /// `[k, 0, 0]` for some `k > 0` and not literally `[1, 0, 0]` — but
+    /// `rgb_to_hsv`'s hue ignores an overall scale entirely and its
+    /// saturation is `(max - min) / max`, which is exactly 1 whenever the
+    /// other two components are exactly 0 regardless of what `k` is. So
+    /// the READING is hue 0°, saturation 1 — the wheel's own rim — even
+    /// though the raw triple is not literally `[1, 0, 0]`.
+    /// Feed in any space's white point (every [`Primaries`] constant here
+    /// shares sRGB's D65) and the weights come back EXACTLY `[1, 1, 1]`,
+    /// no scale ambiguity at all: [`xyz_to_linear_rgb`] is built (its own
+    /// doc, above) so that unit RGB reproduces the white point's OWN
+    /// `Y = 1` chromaticity exactly — the definition of "white" in a
+    /// coherent additive space, and the one case where this function's own
+    /// `Y = 1` convention matches the matrix's internal scale by
+    /// construction. `rgb_to_hsv` of an equal triple is saturation 0, the
+    /// wheel's own centre. Neither anchor is asserted by this function;
+    /// both are the one decomposition landing where a coherent RGB
+    /// system's own definitions put it, one exactly and one up to a scale
+    /// that the reading downstream never sees.
+    ///
+    /// UNUSED SINCE THE TRIANGLE LEFT, AND KEPT ANYWAY: the picker's
+    /// slider bank has no honest place for a 2-D gamut-boundary shape
+    /// (`object::color_picker`'s own module header explains why, and
+    /// names the smaller feature — a live tick on the OKLCh chroma
+    /// slider — that could legitimately use this function again one
+    /// day). Losing its only caller is not a reason to delete tested,
+    /// general-purpose code; [`Color::max_chroma_in`]'s own doc makes
+    /// this same argument about itself, and it applies here without
+    /// having to be made twice.
+    pub fn in_srgb_basis(xy: (f32, f32)) -> [f32; 3] {
+        let (x, y) = xy;
+        let y = y.max(1e-6);
+        let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+        mul_mat_vec(Primaries::SRGB.xyz_to_linear_rgb(), xyz)
+    }
+}
+
+/// The sRGB (D65) linear-light -> CIE XYZ matrix (IEC 61966-2-1 / Bruce
+/// Lindbloom's published constants) — the one place this module names CIE
+/// XYZ with a hand-typed constant. It is used for exactly one thing,
+/// [`lms_to_xyz`], composed there with the SAME sRGB<->LMS matrix
+/// [`Color::to_oklab`] and [`Color::from_oklab_unmapped`] already use and
+/// are already tested against (`oklab_anchors`), so a digit mistyped here
+/// cannot silently agree with the rest of this module: it would move
+/// `from_oklch_in`'s answer for `Primaries::SRGB` away from
+/// `from_oklch`'s, which `an_srgb_target_matches_the_fixed_sRGB_path`
+/// below checks directly, over many lightnesses, hues and chromas at once.
+const SRGB_TO_XYZ: [[f32; 3]; 3] = [
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+];
+
+/// The same sRGB -> LMS matrix [`Color::to_oklab`] opens with, named here
+/// so [`lms_to_xyz`] can be built by composing it with [`SRGB_TO_XYZ`]
+/// instead of introducing a second, independently sourced constant for
+/// Ottosson's own XYZ<->LMS matrix — one fewer place for this module to
+/// misquote a published number.
+const SRGB_TO_LMS: [[f32; 3]; 3] = [
+    [0.412_221_47, 0.536_332_54, 0.051_445_995],
+    [0.211_903_5, 0.680_699_5, 0.107_396_96],
+    [0.088_302_46, 0.281_718_84, 0.629_978_7],
+];
+
+/// LMS -> CIE XYZ: `SRGB_TO_XYZ * SRGB_TO_LMS^-1`, i.e. XYZ -> sRGB_lin ->
+/// LMS run backwards. [`oklab_to_xyz`]'s last step.
+fn lms_to_xyz() -> [[f32; 3]; 3] {
+    mul_mat_mat(SRGB_TO_XYZ, invert3(SRGB_TO_LMS))
+}
+
+/// OKLab -> CIE XYZ (D65): the fixed half of Ottosson's construction,
+/// space-agnostic because CIE XYZ is the space every RGB gamut is defined
+/// relative TO. OKLab -> LMS' -> LMS is the same three lines
+/// [`Color::from_oklab_unmapped`] opens with (copied rather than shared,
+/// since that function's own contract — direct to linear sRGB, no XYZ
+/// stop in between — is untouched by this addition); LMS -> XYZ is
+/// [`lms_to_xyz`]. Every target gamut's own [`Primaries::xyz_to_linear_rgb`]
+/// takes it from here.
+fn oklab_to_xyz(v: Oklab) -> [f32; 3] {
+    let l_ = v.l + 0.396_337_78 * v.a + 0.215_803_76 * v.b;
+    let m_ = v.l - 0.105_561_346 * v.a - 0.063_854_17 * v.b;
+    let s_ = v.l - 0.089_484_18 * v.a - 1.291_485_5 * v.b;
+    let lms = [l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_];
+    mul_mat_vec(lms_to_xyz(), lms)
+}
+
+fn mul_mat_vec(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+fn mul_mat_mat(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0f32; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    out
+}
+
+fn invert3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let d = 1.0 / det;
+    [
+        [
+            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * d,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * d,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * d,
+        ],
+        [
+            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * d,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * d,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * d,
+        ],
+        [
+            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * d,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * d,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * d,
+        ],
+    ]
 }
 
 fn cbrt(v: f32) -> f32 {
@@ -481,6 +762,130 @@ mod tests {
         let out = Color::over(fg, bg);
         assert_eq!(out.a, 1.0);
         assert!(approx(out.b, 1.0, 1e-6) && approx(out.r, 0.0, 1e-6));
+    }
+
+    #[test]
+    fn an_srgb_target_matches_the_fixed_srgb_path() {
+        //! `from_oklch_in`/`max_chroma_in` reach linear-light RGB through
+        //! CIE XYZ and a primaries-built matrix; `from_oklch` never leaves
+        //! the fixed sRGB matrices [`Color::to_oklab`] and
+        //! [`Color::from_oklab_unmapped`] already use. Asking the XYZ road
+        //! for `Primaries::SRGB` is the same question two different ways —
+        //! so if [`SRGB_TO_XYZ`] or the LMS<->XYZ composition it feeds is
+        //! wrong, this is where the two roads' answers come apart, over a
+        //! spread of lightnesses, hues and chromas at once.
+        for l in [0.15f32, 0.35, 0.55, 0.75, 0.92] {
+            for h in [0.0f32, 47.0, 130.0, 210.0, 300.0] {
+                for c in [0.02f32, 0.08, 0.15, 0.30] {
+                    let want = Color::from_oklch(Oklch { l, c, h, alpha: 1.0 });
+                    let got = Color::from_oklch_in(Oklch { l, c, h, alpha: 1.0 }, &Primaries::SRGB);
+                    for (a, b, ch) in [(got.r, want.r, 'r'), (got.g, want.g, 'g'), (got.b, want.b, 'b')] {
+                        assert!(
+                            approx(a, b, 3e-3),
+                            "l={l} h={h} c={c} channel {ch}: {a} vs {b}"
+                        );
+                    }
+                }
+            }
+        }
+        // The achromatic axis lands on the same grey either road, at both
+        // ends of L — the `gamut_map` argument that chroma zero is always
+        // in gamut leans on this.
+        for l in [0.0f32, 0.5, 1.0] {
+            let want = Color::from_oklch(Oklch { l, c: 0.0, h: 0.0, alpha: 1.0 });
+            let got = Color::from_oklch_in(Oklch { l, c: 0.0, h: 0.0, alpha: 1.0 }, &Primaries::SRGB);
+            assert!(approx(got.r, want.r, 1e-3) && approx(got.g, want.g, 1e-3) && approx(got.b, want.b, 1e-3));
+        }
+    }
+
+    #[test]
+    fn wider_gamuts_hold_more_chroma_at_a_green_that_shows_it() {
+        //! P3's own primaries are famously wider than sRGB's at saturated
+        //! green — the textbook example every gamut-comparison chart
+        //! reaches for — so [`Color::max_chroma_in`] must answer a BIGGER
+        //! number for [`Primaries::DISPLAY_P3`] than for [`Primaries::SRGB`]
+        //! at the same lightness and hue, or the picker's boundary curve
+        //! would draw a wide gamut's own rim INSIDE sRGB's, which is
+        //! backwards.
+        let (l, h) = (0.87, 142.0); // a bright, saturated green
+        let srgb = Color::max_chroma_in(l, h, &Primaries::SRGB);
+        let p3 = Color::max_chroma_in(l, h, &Primaries::DISPLAY_P3);
+        assert!(p3 > srgb + 0.02, "P3 chroma {p3} is not wider than sRGB's {srgb} at l={l} h={h}");
+        // And BT.2020, wider again at the same green.
+        let bt2020 = Color::max_chroma_in(l, h, &Primaries::BT2020);
+        assert!(bt2020 > p3, "BT.2020 chroma {bt2020} is not wider than P3's {p3}");
+    }
+
+    #[test]
+    fn max_chroma_in_is_what_the_bisection_lands_on() {
+        //! Not a duplicate of `gamut_map_reduces_chroma_and_never_clamps_per_channel`:
+        //! that test reads the MAPPED COLOUR back through `to_oklch`, which
+        //! is a round trip through OKLab's own cbrt/cube pair and picks up
+        //! its own rounding. `max_chroma_in` is the bisection's raw answer,
+        //! asked of directly and checked against `from_oklch_in` reporting
+        //! a colour AT that exact chroma as in-gamut and just past it as
+        //! not — the two, together, are what a picker deriving a curve's
+        //! RADIUS from this number needs to be true.
+        let (l, h) = (0.7, 30.0);
+        let c = Color::max_chroma_in(l, h, &Primaries::SRGB);
+        assert!(c > 0.0 && c < 0.5, "chroma {c} outside a plausible sRGB range");
+        let at_c = Color::from_oklch_in(Oklch { l, c, h, alpha: 1.0 }, &Primaries::SRGB);
+        assert!(in_gamut(at_c), "the bisection's own answer must itself be in gamut");
+        let just_over = Color::from_oklab_unmapped_in(
+            Oklch { l, c: c + 0.01, h, alpha: 1.0 }.to_oklab(),
+            &Primaries::SRGB,
+        );
+        assert!(!in_gamut(just_over), "a chroma just past the bisection's answer should not be");
+    }
+
+    #[test]
+    fn in_srgb_basis_anchors_a_primary_at_the_rim_and_white_at_the_centre() {
+        //! [`Primaries::in_srgb_basis`]'s own doc claims two anchors fall
+        //! out of ONE decomposition rather than being asserted specially:
+        //! sRGB's own primaries come back PURELY ALONG THEIR OWN AXIS
+        //! (some positive `k` in their own slot, the other two exactly 0
+        //! — not literally `[1, 0, 0]`, since this function's fixed
+        //! `Y = 1` is not the matrix's own per-primary scale, and the doc
+        //! is explicit about that), and any shared white point is unit RGB
+        //! (`[1, 1, 1]`, exactly, no scale ambiguity) by construction of
+        //! `xyz_to_linear_rgb`. Checked here directly, in weight-triple
+        //! terms, before the picker's own test asks the same question one
+        //! step further along in hue/saturation terms — where an overall
+        //! scale on the primaries' own axis stops mattering at all.
+        let red = Primaries::in_srgb_basis(Primaries::SRGB.r);
+        assert!(red[0] > 0.5, "{red:?}");
+        assert!(approx(red[1] / red[0], 0.0, 1e-4) && approx(red[2] / red[0], 0.0, 1e-4), "{red:?}");
+        let green = Primaries::in_srgb_basis(Primaries::SRGB.g);
+        assert!(green[1] > 0.5, "{green:?}");
+        assert!(approx(green[0] / green[1], 0.0, 1e-4) && approx(green[2] / green[1], 0.0, 1e-4), "{green:?}");
+        let blue = Primaries::in_srgb_basis(Primaries::SRGB.b);
+        assert!(blue[2] > 0.5, "{blue:?}");
+        assert!(approx(blue[0] / blue[2], 0.0, 1e-4) && approx(blue[1] / blue[2], 0.0, 1e-4), "{blue:?}");
+        // Display P3 shares sRGB's own blue primary exactly — one more
+        // check that a DIFFERENT space's primary, when it happens to
+        // coincide with sRGB's, decomposes along the same axis rather
+        // than picking up noise from going the long way round.
+        let p3_blue = Primaries::in_srgb_basis(Primaries::DISPLAY_P3.b);
+        assert!(p3_blue[2] > 0.5, "{p3_blue:?}");
+        assert!(approx(p3_blue[0] / p3_blue[2], 0.0, 1e-4) && approx(p3_blue[1] / p3_blue[2], 0.0, 1e-4), "{p3_blue:?}");
+        // Every named space here shares sRGB's own D65, so every one of
+        // their white points decomposes to unit RGB, not only sRGB's own.
+        for p in [Primaries::SRGB, Primaries::DISPLAY_P3, Primaries::ADOBE_RGB, Primaries::BT2020] {
+            let w = Primaries::in_srgb_basis(p.white);
+            assert!(
+                approx(w[0], 1.0, 1e-3) && approx(w[1], 1.0, 1e-3) && approx(w[2], 1.0, 1e-3),
+                "{p:?}'s white point: {w:?}"
+            );
+        }
+        // A primary genuinely OUTSIDE sRGB's own triangle carries a
+        // negative weight on the component it left behind — Display P3's
+        // red reaches further than sRGB's own, so decomposing it in
+        // sRGB's basis must borrow negatively from green or blue.
+        let p3_red = Primaries::in_srgb_basis(Primaries::DISPLAY_P3.r);
+        assert!(
+            p3_red[1] < 0.0 || p3_red[2] < 0.0,
+            "Display P3's red reads as fully inside sRGB's triangle: {p3_red:?}"
+        );
     }
 
     #[test]

@@ -1110,16 +1110,17 @@ panel_edge.enabled = true
 panel_edge.color = element
                     # glow tint; images 1-6; colour or the word `element`,
                     # which means the panel edge's own resolved colour
-panel_edge.radius = 1.6u
+panel_edge.radius = 4u
                     # how far the glow reaches past the edge; images 1-6;
                     # u, 0u .. 4u; 0u is the `none` sentinel — draw nothing
                     # The theme editor's GLOW REACH writes this (BASIC,
                     # 2026-08-18) and the declared 0u..4u above is the
                     # track's two ends — the wall is the FILE's, not the
-                    # editor's. 1.6u is the editor's OWN seed for a lit
-                    # kind chosen on a theme with no dress of its own
-                    # (`theme::edit::border_edits`) — the master now wears
-                    # what a fresh NEON pick would have written it anyway.
+                    # editor's. 4u (2026-08-23) is that wall's TOP: the
+                    # owner asked for the reach at its maximum by default,
+                    # not at border_edits()'s own undressed-theme seed of
+                    # 1.6u, which is now only where a theme's own first
+                    # lit pick still lands.
 panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube
                     # how the light is spent across the radius; images 1-6,
                     # 7-10. `gauss` is the wide soft halo of images 7 and 10
@@ -4504,8 +4505,10 @@ glow.panel_edge.enabled    = true                  # panel edges light up screen
 glow.panel_edge.alpha      = 0.7                   # how hard they light up — roughly double the resting master's own
                     # 0.34 (2026-08-23); image 4; 0..1; overrides glow.panel_edge.alpha. Alert
                     # has to outshout a master that now glows at rest, not merely glow.
-glow.panel_edge.radius     = 3.2u                  # and how far — double the resting master's own 1.6u, for the
-                    # same reason; image 4; u; overrides glow.panel_edge.radius
+                    # No radius override here: the resting master's own reach is 4u,
+                    # the declared 0u..4u track's own ceiling (2026-08-23, "maximum by
+                    # default") — alert cannot reach further than the wall, so it
+                    # inherits the same 4u and carries its whole escalation on alpha.
 
 # ---- lockdown · a CONVENTION, not engine code: alert plus palette.data ---
 # 5.24 ships `normal` and `alert` in the engine and `lockdown` as a
@@ -5045,18 +5048,19 @@ mask_glyph = bullet                 # what a masked char draws as · - · enum: 
 # theme makes.
 # =========================================================================
 [picker]
-gap = @space.3                      # between the field, the bar and the column beside them · - · len (u) · @space.3 = 1.5u = 8.1 px
+gap = @space.3                      # between the slider bank, the patch and the column beside them · - · len (u) · @space.3 = 1.5u = 8.1 px
 pad_x = @space.3                    # inside the two plates, between the ring and the ink · - · len (u) · @space.3 = 1.5u = 8.1 px; the dense-readout inset, as [cell] uses, not the roomier @space.4 a text field wears
-field_h = 26u                       # the hue-by-saturation field's height · - · len (u) · 140.4 px; tall enough to aim inside, short enough for a settings row
-field_w_frac = 0.58                 # how much of the band the field and its bar take, the rest being the patch and the grids · - · frac, 0.1 .. 0.9 · a little over half: the field is the control, everything beside it is a shortcut to a colour
-value_w = 4u                        # the value bar's width · - · len (u) · 21.6 px
+bank_w_frac = 0.58                  # how much of the band the slider bank takes, the rest being the patch and the grids · - · frac, 0.1 .. 0.9 · a little over half: the bank is the control, everything beside it is a shortcut to a colour
+slider_h = 6u                       # one slider's own height · - · len (u) · 32.4 px
+slider_gap = @space.2               # the vertical gap between stacked sliders · - · len (u) · @space.2 = 1u = 5.4 px
+slider_label_w = 4u                 # the channel-letter lane at a slider's own left edge · - · len (u) · 21.6 px; one glyph and its padding, the old value bar's own width repurposed
+slider_min_w = 10u                  # the slider bank's own floor, so it is squeezed rather than made to vanish at a band narrower than bank_w_frac's own share · - · len (u) · 54 px
 patch_h = 6u                        # the chosen colour's patch · - · len (u) · 32.4 px
 row_h = @size.md                    # the readout strip carrying the notation's name and the value · - · len (u) · @size.md
 format_w = 11u                      # the plate that names the notation and steps to the next · - · len (u) · 59.4 px; OKLCH is the longest word it wears and measures 30.3 px at type.data, so this is that word, two pad_x and room for a theme that tracks its data role wider
 swatch = 4u                         # one ready-made colour's cell · - · len (u) · 21.6 px
 swatch_gap = @space.2               # between those cells · - · len (u) · @space.2 = 1u = 5.4 px
-swatch_cols = 8                     # how many cells a grid row holds · - · n · eight is what fits the text side at field_w_frac without the cells shrinking under a fingertip
-hue_stops = 24                      # how finely the circle is sampled across the field · - · n, 2 .. 64 · rect_grad cuts one band per stop interval, so this is the trade between a smooth ramp and the vertex count; 24 is 15 degrees a band
+swatch_cols = 8                     # how many cells a grid row holds · - · n · eight is what fits the text side at bank_w_frac without the cells shrinking under a fingertip
 handle = 1.4u                       # half the marker that stands on a chosen point · - · len (u) · 7.6 px
 handle_stroke = @stroke.regular     # that marker's line weight · - · str · @stroke.regular; it is a RING, so the colour it points at stays visible through it
 checker = 1.6u                      # one square of the chequerboard a colour with alpha is shown against · - · len (u) · 8.6 px
@@ -6254,10 +6258,24 @@ winframe.close             = "CLOSE"             # window-menu row: close the wi
 winframe.close[pl]         = "Zamknij"           # Polish sibling of the row above · images 7,8 · text · literal
 toaster.warning_title      = "WARNING"           # Toast::warning()'s default title · - · text · literal
 toaster.warning_title[pl]  = "UWAGA"             # Polish sibling of the row above · - · text · literal
-color_picker.field         = "Hue and value"     # the picker's 2D field, read by an AT bridge · - · text · literal
-color_picker.field[pl]     = "Odcień i wartość"  # Polish sibling of the row above · - · text · literal
-color_picker.slider        = "Saturation"        # the picker's side slider, read by an AT bridge · - · text · literal
-color_picker.slider[pl]    = "Nasycenie"         # Polish sibling of the row above · - · text · literal
+color_picker.channel_hue        = "Hue"          # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_hue[pl]    = "Odcień"       # Polish sibling of the row above · - · text · literal
+color_picker.channel_saturation = "Saturation"   # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_saturation[pl] = "Nasycenie" # Polish sibling of the row above · - · text · literal
+color_picker.channel_value      = "Value"        # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_value[pl]  = "Wartość"      # Polish sibling of the row above · - · text · literal
+color_picker.channel_lightness  = "Lightness"    # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_lightness[pl] = "Jasność"   # Polish sibling of the row above · - · text · literal
+color_picker.channel_chroma     = "Chroma"       # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_chroma[pl] = "Chrominancja" # Polish sibling of the row above · - · text · literal
+color_picker.channel_alpha      = "Alpha"        # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_alpha[pl]  = "Alfa"         # Polish sibling of the row above · - · text · literal
+color_picker.channel_red        = "Red"          # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_red[pl]    = "Czerwony"     # Polish sibling of the row above · - · text · literal
+color_picker.channel_green      = "Green"        # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_green[pl]  = "Zielony"      # Polish sibling of the row above · - · text · literal
+color_picker.channel_blue       = "Blue"         # a slider's channel name, read by an AT bridge · - · text · literal
+color_picker.channel_blue[pl]   = "Niebieski"    # Polish sibling of the row above · - · text · literal
 color_picker.notation      = "Colour notation"   # the format-cycle button, read by an AT bridge · - · text · literal
 color_picker.notation[pl]  = "Zapis koloru"      # Polish sibling of the row above · - · text · literal
 color_picker.value_suffix    = "value"           # follows the format's own word: "Hue value", "RGB value" · - · text · literal
