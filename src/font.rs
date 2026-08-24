@@ -129,6 +129,22 @@ pub struct Glyph {
     pub advance: f32,
 }
 
+/// One icon's placement in the shared atlas — [`Glyph`]'s twin for
+/// [`FontSystem::icon`], and deliberately not [`Glyph`] itself. An icon
+/// carries no baseline, no pen advance and no per-character identity;
+/// giving it three fields it can never mean would let a caller reach for
+/// `xmin`/`ymin`/`advance` on an icon and get zero rather than a
+/// compile error, which is the wrong shape of mistake to allow.
+#[derive(Clone, Copy)]
+pub struct IconGlyph {
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 // ------------------------------------------------------------ tabular figures
 //
 // `fontdue` exposes no OpenType features, so there is no `tnum` to ask the
@@ -371,6 +387,29 @@ pub struct FontSystem {
     /// and it lives here rather than beside the role because the box is a
     /// property of the FACE at a size, which is what this type owns.
     fig_cache: HashMap<(u8, u32, u64, bool), Figures>,
+    /// Every icon's PARSED source, by id — the expensive half of an SVG
+    /// (walking the XML) done once regardless of how many sizes or
+    /// frames it is drawn at. Survives [`FontSystem::reset_atlas`]: the
+    /// source is not atlas state, only its rasterized placements are.
+    icons: HashMap<u32, crate::icon::SharedIconSource>,
+    /// Every icon's ATLAS PLACEMENT, by (id, px) — [`FontSystem::icon`]'s
+    /// half of the glyph cache's job. Cleared on every
+    /// [`FontSystem::reset_atlas`], unlike `icons` above: the UVs it
+    /// holds stop meaning anything the moment the shelves they point
+    /// into are wiped, exactly like `cache` for glyphs.
+    icon_cache: HashMap<(u32, u32), Option<IconGlyph>>,
+    /// Interning table for [`FontSystem::icon_id`] — a NAME to the id it
+    /// was first registered under, the icon-side twin of
+    /// [`crate::theme::id`]'s token interning. Two plugins asking for
+    /// `"app-generic"` reach the same id and the same atlas slot through
+    /// this, rather than each getting its own copy of the same SVG
+    /// parsed and rasterized twice.
+    icon_names: HashMap<String, u32>,
+    /// The next id [`FontSystem::icon_id`] hands out. Monotonic and
+    /// never reused within one process, so an id already cached on a
+    /// caller's side (a plugin's own `OnceLock`, the way `theme::id` is
+    /// meant to be cached) can never start meaning a different icon.
+    next_icon_id: u32,
     // simple shelf packer
     cur_x: usize,
     cur_y: usize,
@@ -403,6 +442,10 @@ impl FontSystem {
             atlas_dirty: true,
             cache: HashMap::new(),
             fig_cache: HashMap::new(),
+            icons: HashMap::new(),
+            icon_cache: HashMap::new(),
+            icon_names: HashMap::new(),
+            next_icon_id: 0,
             cur_x: 2,
             cur_y: 2,
             row_h: 0,
@@ -549,10 +592,45 @@ impl FontSystem {
         // glyphs. Clearing on the atlas-full path too costs one re-measure
         // per (face, px) and keeps the invalidation rule to one line.
         self.fig_cache.clear();
+        // Same reasoning again for icons: `icons` (the parsed sources)
+        // stays, `icon_cache` (their atlas placements) does not — the
+        // shelves those UVs pointed into were just zeroed above.
+        self.icon_cache.clear();
         self.cur_x = 2;
         self.cur_y = 2;
         self.row_h = 0;
         self.mark_rows(0, MASK_BAND_Y);
+    }
+
+    /// Shelf-packs a `w x h` box above the reserved mask band and
+    /// answers its top-left texel, or `None` when the atlas has no more
+    /// room this frame.
+    ///
+    /// The one packer both [`FontSystem::glyph`] and [`FontSystem::icon`]
+    /// allocate from — a glyph bitmap and a rasterized icon are the same
+    /// KIND of thing to this struct, an R8 box that has to land
+    /// somewhere above `MASK_BAND_Y` and be found again by UV, and there
+    /// used to be two copies of exactly this arithmetic the day the
+    /// second one was written. `None` defers to the caller exactly as
+    /// the old inline version did: `reset_pending` is set so
+    /// `begin_frame` clears the atlas before the NEXT frame, never
+    /// mid-frame, because glyphs and icons already emitted into the
+    /// current draw list carry UVs into the atlas as it stands right
+    /// now.
+    fn alloc_shelf(&mut self, w: usize, h: usize) -> Option<(usize, usize)> {
+        if self.cur_x + w + 2 > ATLAS_W {
+            self.cur_x = 2;
+            self.cur_y += self.row_h + 2;
+            self.row_h = 0;
+        }
+        if self.cur_y + h + 2 > MASK_BAND_Y {
+            self.reset_pending = true;
+            return None;
+        }
+        let (ax, ay) = (self.cur_x, self.cur_y);
+        self.cur_x += w + 2;
+        self.row_h = self.row_h.max(h);
+        Some((ax, ay))
     }
 
     pub fn glyph(&mut self, font: u8, px: f32, ch: char) -> Option<Glyph> {
@@ -578,25 +656,16 @@ impl FontSystem {
             return g;
         }
         let (w, h) = (metrics.width, metrics.height);
-        if self.cur_x + w + 2 > ATLAS_W {
-            self.cur_x = 2;
-            self.cur_y += self.row_h + 2;
-            self.row_h = 0;
-        }
-        if self.cur_y + h + 2 > MASK_BAND_Y {
+        let Some((ax, ay)) = self.alloc_shelf(w, h) else {
             // Atlas full — defer the reset to the next frame (begin_frame)
             // instead of zeroing it mid-frame under the current draw list.
             // This glyph is skipped for one frame, then rendered cleanly.
-            self.reset_pending = true;
             return None;
-        }
-        let (ax, ay) = (self.cur_x, self.cur_y);
+        };
         for row in 0..h {
             let dst = (ay + row) * ATLAS_W + ax;
             self.atlas[dst..dst + w].copy_from_slice(&bitmap[row * w..row * w + w]);
         }
-        self.cur_x += w + 2;
-        self.row_h = self.row_h.max(h);
         self.mark_rows(ay, ay + h);
 
         let g = Some(Glyph {
@@ -612,6 +681,102 @@ impl FontSystem {
         });
         self.cache.insert(key, g);
         g
+    }
+
+    /// Registers `svg`'s parsed source under `id`, replacing whatever
+    /// stood there. Parsing happens HERE, once — [`FontSystem::icon`]
+    /// only ever rasterizes an already-parsed [`IconSource`], the same
+    /// division `load_faces` keeps between reading a face file and
+    /// [`FontSystem::glyph`] rasterizing a character out of it.
+    ///
+    /// `id` is the caller's own — this type keeps no name→id interning
+    /// of its own, unlike [`crate::theme::id`]. The plugin ABI is where
+    /// that choice is spent: [`crate::plugin`]'s icon entry points intern
+    /// by NAME once, at first use, and hand every caller back the same
+    /// id for the same name, so two widgets asking for `"app-generic"`
+    /// end up sharing one atlas slot rather than two.
+    ///
+    /// A stale placement for `id` at any size is dropped along with the
+    /// old source: re-registering the id is what a caller does when the
+    /// SVG itself changed (a theme reload naming a different file for
+    /// the same role), and drawing the old rasterization one frame past
+    /// that would show the wrong icon rather than a blank one.
+    pub fn register_icon(&mut self, id: u32, svg: &[u8]) -> Result<(), crate::icon::IconError> {
+        let src = crate::icon::IconSource::parse(svg)?;
+        self.icons.insert(id, std::sync::Arc::new(src));
+        self.icon_cache.retain(|k, _| k.0 != id);
+        Ok(())
+    }
+
+    /// The atlas placement of icon `id` at `px` texels square, rasterizing
+    /// and packing it on first use and answering the cached UVs on every
+    /// call after — [`FontSystem::glyph`]'s own shape, spent on one more
+    /// source of coverage bitmaps.
+    ///
+    /// `None`: `id` was never [`FontSystem::register_icon`]-ed, `px` is 0
+    /// (the one way a registered, valid source can still fail to
+    /// rasterize — see [`IconError::ZeroSize`](crate::icon::IconError)),
+    /// or the atlas had no room this frame, in which case
+    /// [`FontSystem::alloc_shelf`] has already scheduled the deferred
+    /// reset [`FontSystem::begin_frame`] performs — the same "skip one
+    /// frame, then draw cleanly" behaviour an atlas-full glyph gets, and
+    /// for the same reason: an icon already emitted into the current
+    /// draw list must keep the UV it was drawn with.
+    pub fn icon(&mut self, id: u32, px: u32) -> Option<IconGlyph> {
+        let key = (id, px);
+        if let Some(g) = self.icon_cache.get(&key) {
+            return *g;
+        }
+        let src = self.icons.get(&id)?.clone();
+        let mask = crate::icon::rasterize_to_mask(&src, px).ok()?;
+        let (w, h) = (px as usize, px as usize);
+        // Atlas full — `alloc_shelf` has already scheduled the deferred
+        // reset (see [`FontSystem::glyph`]'s own comment at the same
+        // check); this icon is skipped for one frame, not cached as
+        // absent, so the next call after the reset packs it cleanly.
+        let (ax, ay) = self.alloc_shelf(w, h)?;
+        for row in 0..h {
+            let dst = (ay + row) * ATLAS_W + ax;
+            self.atlas[dst..dst + w].copy_from_slice(&mask[row * w..row * w + w]);
+        }
+        self.mark_rows(ay, ay + h);
+        let g = Some(IconGlyph {
+            u0: ax as f32 / ATLAS_W as f32,
+            v0: ay as f32 / ATLAS_H as f32,
+            u1: (ax + w) as f32 / ATLAS_W as f32,
+            v1: (ay + h) as f32 / ATLAS_H as f32,
+            w: w as f32,
+            h: h as f32,
+        });
+        self.icon_cache.insert(key, g);
+        g
+    }
+
+    /// Interns `name` to a stable icon id, parsing and registering `svg`
+    /// only the FIRST time this name is seen on this `FontSystem` — every
+    /// call after answers the same id without touching the parser. This
+    /// is [`FontSystem::register_icon`]'s NAMED form and the one the
+    /// plugin ABI's `icon_register` calls; `register_icon` stays
+    /// available for a caller (this module's own tests included) that
+    /// wants to pick its own numbering instead of asking for one.
+    ///
+    /// `svg` is IGNORED once `name` is already known — the first
+    /// registration wins, exactly as [`crate::theme::id`] answers the
+    /// same id for a token name however many times it is asked, and for
+    /// the same reason: an id is a promise that it keeps meaning one
+    /// thing, and a caller that wants a name to mean a NEW source has
+    /// [`FontSystem::register_icon`] with the id this call already
+    /// answered, which replaces the source in place (see that method's
+    /// own doc comment).
+    pub fn icon_id(&mut self, name: &str, svg: &[u8]) -> Result<u32, crate::icon::IconError> {
+        if let Some(&id) = self.icon_names.get(name) {
+            return Ok(id);
+        }
+        let id = self.next_icon_id;
+        self.register_icon(id, svg)?;
+        self.icon_names.insert(name.to_string(), id);
+        self.next_icon_id += 1;
+        Ok(id)
     }
 
     /// Line metrics: (ascent, line height).
@@ -1788,5 +1953,139 @@ mod tests {
         let bare = font_search_path(None, None);
         assert_eq!(bare.len(), 2, "{bare:?}");
         assert_eq!(cwd_dependent(&bare).len(), 0, "{bare:?}");
+    }
+
+    // ------------------------------------------------------------ icons (K8)
+    //
+    // These exercise [`FontSystem::register_icon`] and [`FontSystem::icon`]
+    // against the SAME atlas [`FontSystem::glyph`]'s tests above trust —
+    // the claim under test is that an icon's placement behaves exactly
+    // like a glyph's: cached by (id, size), the atlas bytes actually
+    // hold the rasterized coverage at the UVs answered, and a theme
+    // reload's reset invalidates the placement without losing the parsed
+    // source.
+
+    /// The same circle [`crate::icon::tests`] rasterizes standalone —
+    /// kept identical rather than newly authored, so a failure here
+    /// points at the ATLAS half of the pipeline (packing, UV mapping,
+    /// caching) and a failure there points at the RASTER half, instead
+    /// of the two suites disagreeing about what "a circle" means.
+    const CIRCLE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="10"/>
+</svg>"#;
+
+    #[test]
+    fn an_icon_packs_into_the_atlas_and_its_uv_rect_holds_the_mask() {
+        let mut fs = FontSystem::new();
+        fs.register_icon(1, CIRCLE_SVG).expect("a valid circle svg");
+        let g = fs.icon(1, 32).expect("a registered id at a nonzero size");
+        assert!(g.u1 > g.u0 && g.v1 > g.v0, "empty uv rect");
+        assert_eq!((g.w, g.h), (32.0, 32.0));
+        // Walk the UV rect back to atlas texels and check the SAME two
+        // points the standalone rasterizer test checks: the circle's
+        // centre lit, a corner of its box dark — proving the bytes
+        // `FontSystem::icon` copied into `self.atlas` are the mask, not
+        // some other rectangle of it.
+        let ax = (g.u0 * ATLAS_W as f32).round() as usize;
+        let ay = (g.v0 * ATLAS_H as f32).round() as usize;
+        let texel = |dx: usize, dy: usize| fs.atlas[(ay + dy) * ATLAS_W + (ax + dx)];
+        assert!(texel(16, 16) > 250, "the circle's own centre should be lit in the atlas");
+        assert_eq!(texel(1, 1), 0, "a corner outside the circle should be dark in the atlas");
+    }
+
+    #[test]
+    fn the_same_id_and_size_answers_the_same_placement_without_moving() {
+        let mut fs = FontSystem::new();
+        fs.register_icon(2, CIRCLE_SVG).unwrap();
+        let first = fs.icon(2, 16).unwrap();
+        // A dirty-row take between the two calls: if the second call
+        // rasterized and packed again, the atlas would have new rows to
+        // upload; a true cache hit touches nothing.
+        fs.take_dirty_rows();
+        let second = fs.icon(2, 16).unwrap();
+        assert_eq!((first.u0, first.v0, first.u1, first.v1), (second.u0, second.v0, second.u1, second.v1));
+        assert_eq!(fs.take_dirty_rows(), None, "a cache hit must not re-touch the atlas");
+    }
+
+    #[test]
+    fn two_sizes_of_one_icon_land_at_two_places() {
+        let mut fs = FontSystem::new();
+        fs.register_icon(3, CIRCLE_SVG).unwrap();
+        let small = fs.icon(3, 16).unwrap();
+        let large = fs.icon(3, 48).unwrap();
+        assert_eq!((small.w, small.h), (16.0, 16.0));
+        assert_eq!((large.w, large.h), (48.0, 48.0));
+        assert!(
+            (small.u0, small.v0) != (large.u0, large.v0),
+            "two distinct (id, px) keys must not alias one shelf slot"
+        );
+    }
+
+    #[test]
+    fn an_unregistered_id_answers_none_rather_than_a_blank_icon() {
+        let mut fs = FontSystem::new();
+        assert!(fs.icon(999, 16).is_none());
+    }
+
+    #[test]
+    fn a_malformed_svg_is_refused_at_registration_not_drawn_as_garbage() {
+        let mut fs = FontSystem::new();
+        assert!(fs.register_icon(4, b"not an svg").is_err());
+        assert!(fs.icon(4, 16).is_none(), "a failed registration must not leave a usable id");
+    }
+
+    #[test]
+    fn reloading_faces_drops_the_placement_but_keeps_the_source() {
+        let mut fs = FontSystem::new();
+        fs.register_icon(5, CIRCLE_SVG).unwrap();
+        let before = fs.icon(5, 20).unwrap();
+        // `reload_faces` resets the atlas exactly as a theme swap does —
+        // the glyph cache empties, and so must the icon placement cache,
+        // because the shelf `before`'s UVs pointed into was just
+        // zeroed. The SOURCE survives: this call rasterizes cleanly
+        // again rather than answering `None` for an id that is still
+        // registered.
+        fs.reload_faces(&FaceChoice::default());
+        let after = fs.icon(5, 20).expect("the source must survive a reset, only its placement resets");
+        assert_eq!((after.w, after.h), (before.w, before.h));
+    }
+
+    #[test]
+    fn re_registering_an_id_drops_its_stale_atlas_placement() {
+        let mut fs = FontSystem::new();
+        fs.register_icon(6, CIRCLE_SVG).unwrap();
+        fs.icon(6, 16).expect("the circle registers and packs cleanly");
+        fs.take_dirty_rows();
+        const DIAMOND_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <polygon points="12,1 23,12 12,23 1,12"/>
+</svg>"#;
+        // Registering a new source under the SAME id must purge id 6's
+        // (id, px) placements — a theme reload naming a different SVG
+        // for one role is exactly this call, and a stale UV surviving
+        // it would draw the icon that used to be there. `icon()` right
+        // after must therefore rasterize and pack again (a fresh dirty
+        // row), not answer the old cached rect for free.
+        fs.register_icon(6, DIAMOND_SVG).unwrap();
+        assert!(fs.icon(6, 16).is_some());
+        assert!(
+            fs.take_dirty_rows().is_some(),
+            "a re-registration must invalidate the cached placement, \
+             or the diamond would never actually get packed and the \
+             old circle's UVs would keep answering for id 6"
+        );
+    }
+
+    #[test]
+    fn icon_id_interns_by_name_the_second_call_never_reparses() {
+        let mut fs = FontSystem::new();
+        let a = fs.icon_id("wrench", CIRCLE_SVG).unwrap();
+        // A second call under the SAME name, with a document that would
+        // fail to parse if it were actually read: proving the first
+        // registration's id is what comes back, not a fresh parse of
+        // whatever `svg` this call happened to pass.
+        let b = fs.icon_id("wrench", b"not an svg").unwrap();
+        assert_eq!(a, b);
+        let other = fs.icon_id("gear", CIRCLE_SVG).unwrap();
+        assert_ne!(a, other, "two distinct names must not collapse onto one id");
     }
 }

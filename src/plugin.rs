@@ -348,6 +348,42 @@ extern "C" fn h_mask_quad(p: *mut c_void, pts: *const f32, uv: *const f32, c: Co
     );
 }
 
+/// The plugin half of the icon path (K8): interns `name` on THIS ctx's
+/// own [`FontSystem`], parsing `svg` only the first time the name is
+/// seen — see [`FontSystem::icon_id`] for the caching this rests on.
+/// `u32::MAX`, never a real id, on a null pointer, on `name` that is not
+/// UTF-8, or on an `svg` [`crate::icon::IconSource::parse`] refuses.
+extern "C" fn h_icon_register(
+    p: *mut c_void,
+    name: *const u8,
+    name_len: u32,
+    svg: *const u8,
+    svg_len: u32,
+) -> u32 {
+    let Some(ctx) = (unsafe { ctx_of(p) }) else { return u32::MAX };
+    if name.is_null() || svg.is_null() {
+        return u32::MAX;
+    }
+    let name = unsafe { std::slice::from_raw_parts(name, name_len as usize) };
+    let Ok(name) = std::str::from_utf8(name) else { return u32::MAX };
+    let svg = unsafe { std::slice::from_raw_parts(svg, svg_len as usize) };
+    ctx.fonts.icon_id(name, svg).unwrap_or(u32::MAX)
+}
+
+/// The plugin half of the icon path's draw call: four corners, eight
+/// floats, exactly like [`h_quad`] — [`crate::draw::DrawList::icon_quad`]
+/// on this side of the boundary, so the numbers a plugin passes can
+/// never name an atlas texel directly, only an icon id it already holds.
+extern "C" fn h_icon_quad(p: *mut c_void, id: u32, px: f32, pts: *const f32, c: ColorC) {
+    let Some(ctx) = (unsafe { ctx_of(p) }) else { return };
+    if pts.is_null() {
+        return;
+    }
+    let pv = unsafe { std::slice::from_raw_parts(pts, 8) };
+    let p4: [[f32; 2]; 4] = std::array::from_fn(|i| [pv[i * 2], pv[i * 2 + 1]]);
+    ctx.dl.icon_quad(ctx.fonts, id, px.max(0.0).round() as u32, p4, color_in(c));
+}
+
 /// The clip pair, forwarding [`DrawList::push_clip`](crate::draw::DrawList::push_clip)
 /// straight across the boundary — the nesting, the intersection and the
 /// run boundary are all the draw list's, so a plugin's clip behaves
@@ -854,6 +890,8 @@ pub fn host_api() -> &'static HostApi {
         settings_read: h_settings_read,
         settings_epoch: h_settings_epoch,
         theme_text: h_theme_text,
+        icon_register: h_icon_register,
+        icon_quad: h_icon_quad,
     };
     &API
 }
@@ -1473,7 +1511,7 @@ mod tests {
     #[test]
     fn the_host_table_grows_at_the_end_only() {
         use crate::runtime::{
-            HOST_API_HAS_CHANNEL, HOST_API_HAS_CLIP, HOST_API_HAS_ENUM_WORD,
+            HOST_API_HAS_CHANNEL, HOST_API_HAS_CLIP, HOST_API_HAS_ENUM_WORD, HOST_API_HAS_ICON,
             HOST_API_HAS_MASK_QUAD, HOST_API_HAS_RING, HOST_API_HAS_SETTINGS,
             HOST_API_HAS_THEME_TEXT, HOST_API_HAS_TOOLTIP, HOST_API_SIZE_MIN,
         };
@@ -1487,8 +1525,9 @@ mod tests {
         assert!(api.has_channel());
         assert!(api.has_settings());
         assert!(api.has_theme_text());
+        assert!(api.has_icon());
         // The appended entries sit past the mandatory prefix, in order,
-        // with the text-token entry the current end of the table.
+        // with the icon pair (K8) the current end of the table.
         assert!(HOST_API_SIZE_MIN < HOST_API_HAS_ENUM_WORD);
         assert!(HOST_API_HAS_ENUM_WORD < HOST_API_HAS_MASK_QUAD);
         assert!(HOST_API_HAS_MASK_QUAD < HOST_API_HAS_CLIP);
@@ -1497,7 +1536,8 @@ mod tests {
         assert!(HOST_API_HAS_TOOLTIP < HOST_API_HAS_CHANNEL);
         assert!(HOST_API_HAS_CHANNEL < HOST_API_HAS_SETTINGS);
         assert!(HOST_API_HAS_SETTINGS < HOST_API_HAS_THEME_TEXT);
-        assert_eq!(HOST_API_HAS_THEME_TEXT, std::mem::size_of::<HostApi>());
+        assert!(HOST_API_HAS_THEME_TEXT < HOST_API_HAS_ICON);
+        assert_eq!(HOST_API_HAS_ICON, std::mem::size_of::<HostApi>());
         // A host that stopped at the version-6 minimum answers none of
         // them, which is what a plugin's `has_*` gate is for.
         let old = HostApi { api_size: HOST_API_SIZE_MIN as u32, ..*api };
@@ -1509,6 +1549,22 @@ mod tests {
         assert!(!old.has_channel());
         assert!(!old.has_settings());
         assert!(!old.has_theme_text());
+        assert!(!old.has_icon());
+        // The table as it stood before the icon pair — a shipped plugin
+        // measured exactly this, and the new gate must answer false for
+        // it or that plugin reads past the end of the table.
+        let pre_icon = HostApi { api_size: HOST_API_HAS_THEME_TEXT as u32, ..*api };
+        assert!(pre_icon.has_theme_text());
+        assert!(!pre_icon.has_icon());
+        // Half the icon pair is no icon: a table that reaches
+        // `icon_register` and stops must be called for neither entry —
+        // a plugin that could ask for an id and never draw it is no
+        // better off than one with neither call.
+        let half_icon = HostApi {
+            api_size: (std::mem::offset_of!(HostApi, icon_quad)) as u32,
+            ..*api
+        };
+        assert!(!half_icon.has_icon());
         // And a host from before the ring pair keeps the clips.
         let pre_ring = HostApi { api_size: HOST_API_HAS_CLIP as u32, ..*api };
         assert!(pre_ring.has_clip());

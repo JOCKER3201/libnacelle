@@ -1191,6 +1191,13 @@ pub enum DrawCmd {
     ImageUv { r: [f32; 4], uv: [[f32; 2]; 4], id: ImageId, tint: Color },
     Blur { r: [f32; 4], tint: Color },
     MaskQuad { p: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: Color, additive: bool },
+    /// [`DrawList::icon_quad`] — an SVG icon's own atlas rect (K8),
+    /// resolved by [`crate::font::FontSystem::icon`] and sampled here
+    /// exactly as a glyph run is. `icon` prints the id the caller asked
+    /// for, not the atlas texels it happened to land at: a re-run of the
+    /// same frame that shelf-packed differently must still print the
+    /// same line.
+    IconQuad { p: [[f32; 2]; 4], icon: u32, color: Color },
     /// [`DrawList::glow_ring_with`] — `profile` is INTENT (a theme named
     /// a shape for the light) and belongs here whole, band count
     /// included: the count is a token like the other three, and the
@@ -1558,6 +1565,12 @@ impl fmt::Display for DrawCmd {
                 uvs(f, uv)?;
                 rgba(f, *color)?;
                 f.write_str(if *additive { " add" } else { " cover" })
+            }
+            DrawCmd::IconQuad { p, icon, color } => {
+                f.write_str("icon_quad p")?;
+                points(f, p)?;
+                write!(f, " icon {icon}")?;
+                rgba(f, *color)
             }
             DrawCmd::GlowRing { r, corners: c, radius, color, profile } => {
                 f.write_str("glow_ring at")?;
@@ -3615,6 +3628,46 @@ impl DrawList {
         self.push_quad4(image, p, m, [color.to_array(); 4]);
     }
 
+    /// One quad over an SVG icon's own placement in the shared atlas
+    /// (K8) — [`FontSystem::icon`]'s uv rect, sampled corner-for-corner
+    /// and tinted by `color`, exactly the way a glyph run already is.
+    ///
+    /// `id` is the icon's id ([`FontSystem::register_icon`] or the
+    /// interned [`FontSystem::icon_id`]) and `px` the RASTER size to
+    /// resolve it at — not necessarily the size `p` draws it into: a
+    /// caller free to stretch a 32px rasterization across a 40px box
+    /// pays a resample, the same tolerance a glyph already has between
+    /// how it was rasterized and how big it is drawn. Unlike
+    /// [`DrawList::mask_quad`] the uv rect is not a caller-addressed
+    /// sprite space mapped through a `band`: it comes straight from
+    /// `fonts.icon`, which is also the reason this takes `fonts`
+    /// explicitly rather than reading atlas state of its own — the
+    /// list draws, [`FontSystem`] alone knows where anything landed.
+    ///
+    /// An unregistered `id`, `px == 0`, or an atlas with no room this
+    /// frame all answer the same way: [`FontSystem::icon`] returns
+    /// `None`, the command is still RECORDED (a caller reading the
+    /// register back sees the icon that was asked for even on the frame
+    /// it could not be drawn), and nothing is pushed to the vertex
+    /// buffer — "try again next frame", not an error, exactly like an
+    /// atlas-full glyph.
+    pub fn icon_quad(
+        &mut self,
+        fonts: &mut FontSystem,
+        id: u32,
+        px: u32,
+        p: [[f32; 2]; 4],
+        color: Color,
+    ) {
+        self.cmd(|| DrawCmd::IconQuad { p, icon: id, color });
+        if color.a <= 0.0 {
+            return;
+        }
+        let Some(g) = fonts.icon(id, px) else { return };
+        let uv = [[g.u0, g.v0], [g.u1, g.v0], [g.u1, g.v1], [g.u0, g.v1]];
+        self.push_quad4(None, p, uv, [color.to_array(); 4]);
+    }
+
     /// Glow OUTSIDE the silhouette, in an ADDITIVE run — the pipeline
     /// adds light instead of filming milk over a lit backdrop.
     ///
@@ -5328,6 +5381,47 @@ mod tests {
         let mut dl = DrawList::new();
         dl.mask_quad(p, wild, band, col.alpha(0.0), true);
         assert!(dl.verts.is_empty());
+    }
+
+    /// A registered icon draws through [`DrawList::icon_quad`] at the uv
+    /// rect [`FontSystem::icon`] answers — and the register keeps the id,
+    /// not the atlas floats, so a caller reading it back learns WHICH
+    /// icon was drawn rather than where the shelf packer happened to
+    /// put it this run.
+    #[test]
+    fn icon_quad_samples_the_icons_own_uv_rect() {
+        const CIRCLE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="10"/>
+</svg>"#;
+        let mut fonts = FontSystem::new();
+        fonts.register_icon(7, CIRCLE_SVG).unwrap();
+        let g = fonts.icon(7, 16).expect("registered id at a nonzero size");
+
+        let mut dl = DrawList::new();
+        let p = [[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]];
+        let col = Color::rgb8(255, 255, 255);
+        dl.icon_quad(&mut fonts, 7, 16, p, col);
+
+        assert_eq!(dl.verts.len(), 6, "one quad, six vertices");
+        assert!(dl.runs.iter().all(|r| r.image.is_none()), "an icon samples the plain atlas run, not ADD_ATLAS");
+        let uvs: Vec<[f32; 2]> = dl.verts.iter().map(|v| v.uv).collect();
+        for want in [[g.u0, g.v0], [g.u1, g.v0], [g.u1, g.v1], [g.u0, g.v1]] {
+            assert!(uvs.contains(&want), "missing corner {want:?} in {uvs:?}");
+        }
+        assert!(dl.verts.iter().all(|v| v.color == col.to_array()));
+    }
+
+    #[test]
+    fn icon_quad_records_the_id_and_draws_nothing_for_an_unregistered_one() {
+        let mut fonts = FontSystem::new();
+        let mut dl = DrawList::recording();
+        let p = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        dl.icon_quad(&mut fonts, 404, 16, p, Color::rgb8(1, 2, 3));
+        assert!(dl.verts.is_empty(), "an id nobody registered draws nothing");
+        assert!(
+            matches!(dl.cmds.as_ref().unwrap().last(), Some(DrawCmd::IconQuad { icon: 404, .. })),
+            "the attempt is still recorded, so a register reader sees what was ASKED for"
+        );
     }
 
     /// The glow follows the corner it wraps: around a Round corner every
