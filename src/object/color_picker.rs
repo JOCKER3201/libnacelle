@@ -1030,18 +1030,36 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
         Part::Field => {
             let hue = p.hsv[0].rem_euclid(360.0);
             let value = p.hsv[2] * 100.0;
-            AccessInfo::new(Role::Slider, "Hue and value")
-                .with_value(format!("hue {hue:.0}°, value {value:.0}%"))
+            AccessInfo::new(
+                Role::Slider,
+                ui::theme_catalog_named("catalog.color_picker.field", "Hue and value").to_string(),
+            )
+            .with_value(format!("hue {hue:.0}°, value {value:.0}%"))
         }
-        Part::Value => AccessInfo::new(Role::Slider, "Saturation")
-            .with_value(format!("{:.0}%", p.hsv[1] * 100.0)),
-        Part::Format => {
-            AccessInfo::new(Role::Button, "Colour notation").with_value(p.format.word())
-        }
-        Part::Text => AccessInfo::new(Role::TextInput, format!("{} value", p.format.word()))
-            .with_value(p.text()),
+        Part::Value => AccessInfo::new(
+            Role::Slider,
+            ui::theme_catalog_named("catalog.color_picker.slider", "Saturation").to_string(),
+        )
+        .with_value(format!("{:.0}%", p.hsv[1] * 100.0)),
+        Part::Format => AccessInfo::new(
+            Role::Button,
+            ui::theme_catalog_named("catalog.color_picker.notation", "Colour notation").to_string(),
+        )
+        .with_value(p.format.word()),
+        Part::Text => AccessInfo::new(
+            Role::TextInput,
+            format!(
+                "{} {}",
+                p.format.word(),
+                ui::theme_catalog_named("catalog.color_picker.value_suffix", "value")
+            ),
+        )
+        .with_value(p.text()),
         Part::Base(i) => {
-            let mut info = AccessInfo::new(Role::Button, "Preset colour");
+            let mut info = AccessInfo::new(
+                Role::Button,
+                ui::theme_catalog_named("catalog.color_picker.preset", "Preset colour").to_string(),
+            );
             if let Some(c) = bases.get(i) {
                 info = info
                     .with_value(write(*c, Format::Rgba))
@@ -1050,7 +1068,10 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
             info
         }
         Part::Custom(i) => {
-            let mut info = AccessInfo::new(Role::Button, "Custom colour");
+            let mut info = AccessInfo::new(
+                Role::Button,
+                ui::theme_catalog_named("catalog.color_picker.custom", "Custom colour").to_string(),
+            );
             if let Some(c) = custom.get(i) {
                 info = info
                     .with_value(write(*c, Format::Rgba))
@@ -1058,8 +1079,11 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
             }
             info
         }
-        Part::Add => AccessInfo::new(Role::Button, "Save current colour")
-            .with_value(write(p.colour(), Format::Rgba)),
+        Part::Add => AccessInfo::new(
+            Role::Button,
+            ui::theme_catalog_named("catalog.color_picker.save", "Save current colour").to_string(),
+        )
+        .with_value(write(p.colour(), Format::Rgba)),
     }
 }
 
