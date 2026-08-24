@@ -998,6 +998,71 @@ fn swatch(ctx: &mut Ctx, r: Rect, c: Color) {
     frame(ctx, r);
 }
 
+/// What a screen reader should say for one part: a name a PERSON would
+/// call it, the role it actually plays, and the reading it holds right
+/// now — never the Debug-derived `"Field"`/`"Custom(2)"` the foundation
+/// pass placeholdered here, which names the enum variant and not the
+/// control.
+///
+/// THE FIELD AND THE BAR ARE NAMED FOR WHAT THEY MOVE, NOT FOR THE
+/// VARIANT: `Part::Value` is the bar, and the bar answers for SATURATION
+/// since the 2026-08-23 axis swap ([`Picker::value_at`]'s own note) — a
+/// bridge that read the variant's name would tell a screen reader the
+/// one thing that stopped being true. `Part::Field` still carries two
+/// channels at once (hue across, value down), which is why it gets both
+/// in its value rather than a single number standing in for two.
+///
+/// THE FORMAT PLATE AND THE SWATCHES ARE BUTTONS, NOT SLIDERS: a press
+/// steps the notation on one, banks or picks a colour on the others —
+/// none of them read back a dragged position, which is what
+/// [`Role::Slider`] promises a bridge. [`Role::TextInput`] stays on
+/// `Part::Text` alone, the one part a person types into.
+///
+/// EVERY VALUE IS THE COLOUR ITSELF, NOT ITS COORDINATES, on the base
+/// and custom cells and the bank button — `write`'s RGBA form, because a
+/// swatch can carry alpha (`swatch`'s own chequerboard says so) and a
+/// notation that dropped the byte would misreport a transparent cell as
+/// opaque. `bases` and `custom` are handed in rather than re-read so a
+/// part's value can never disagree with the swatch [`draw`] paints for
+/// the same index.
+fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> AccessInfo {
+    match part {
+        Part::Field => {
+            let hue = p.hsv[0].rem_euclid(360.0);
+            let value = p.hsv[2] * 100.0;
+            AccessInfo::new(Role::Slider, "Hue and value")
+                .with_value(format!("hue {hue:.0}°, value {value:.0}%"))
+        }
+        Part::Value => AccessInfo::new(Role::Slider, "Saturation")
+            .with_value(format!("{:.0}%", p.hsv[1] * 100.0)),
+        Part::Format => {
+            AccessInfo::new(Role::Button, "Colour notation").with_value(p.format.word())
+        }
+        Part::Text => AccessInfo::new(Role::TextInput, format!("{} value", p.format.word()))
+            .with_value(p.text()),
+        Part::Base(i) => {
+            let mut info = AccessInfo::new(Role::Button, "Preset colour");
+            if let Some(c) = bases.get(i) {
+                info = info
+                    .with_value(write(*c, Format::Rgba))
+                    .with_index(i as u32 + 1, bases.len() as u32);
+            }
+            info
+        }
+        Part::Custom(i) => {
+            let mut info = AccessInfo::new(Role::Button, "Custom colour");
+            if let Some(c) = custom.get(i) {
+                info = info
+                    .with_value(write(*c, Format::Rgba))
+                    .with_index(i as u32 + 1, custom.len() as u32);
+            }
+            info
+        }
+        Part::Add => AccessInfo::new(Role::Button, "Save current colour")
+            .with_value(write(p.colour(), Format::Rgba)),
+    }
+}
+
 /// [`draw`], joined to the world's focus chain.
 ///
 /// EVERY PART REGISTERS, not just the field: a swatch the pointer can
@@ -1020,16 +1085,16 @@ pub fn draw_focusable(
     custom: &[Color],
     id_of: impl Fn(Part) -> FocusId,
 ) {
+    // Read once, for every base cell alike: the same rule `layout_with`
+    // itself follows (`Metrics` read once and passed around), so a
+    // re-bake mid-loop cannot leave one cell's report disagreeing with
+    // the swatch [`draw`] paints beside it.
+    let bases = base_colours();
     let rings: Vec<(Rect, bool)> = parts(l)
         .into_iter()
         .map(|(part, r)| {
-            let role = match part {
-                Part::Text => Role::TextInput,
-                _ => Role::Slider,
-            };
-            let f = ctx.focus.as_deref_mut().map(|fc| {
-                fc.register(id_of(part), r, Caps::NONE, AccessInfo::new(role, format!("{part:?}")))
-            });
+            let access = part_access(part, p, &bases, custom);
+            let f = ctx.focus.as_deref_mut().map(|fc| fc.register(id_of(part), r, Caps::NONE, access));
             (r, f.map_or(false, |f| f.ring))
         })
         .collect();
@@ -1052,6 +1117,7 @@ mod tests {
 
     use super::*;
     use crate::draw::{DrawCmd, DrawList};
+    use crate::focus::FocusCtl;
     use crate::font::FontSystem;
     use crate::pointer::Pointer;
 
@@ -1551,5 +1617,131 @@ mod tests {
         approx(base[0].r, accent.r, 1e-5, "the first cell is the accent");
         approx(base[0].g, accent.g, 1e-5, "the first cell is the accent");
         approx(base[0].b, accent.b, 1e-5, "the first cell is the accent");
+    }
+
+    // ---- accessible reporting -------------------------------------
+
+    /// Runs [`draw_focusable`] into a live [`FocusCtl`] and hands back
+    /// what every part reported, keyed by [`Part`] — the register /
+    /// `begin_frame` / read-`prev` dance every test below needs, written
+    /// once rather than three times.
+    fn registered_access(l: &Layout, p: &Picker, custom: &[Color]) -> Vec<(Part, AccessInfo)> {
+        let mut fonts = FontSystem::new();
+        let mut dl = DrawList::new();
+        let mut fc = FocusCtl::new();
+        {
+            let mut ctx = probe(&mut dl, &mut fonts);
+            ctx.focus = Some(&mut fc);
+            draw_focusable(&mut ctx, l, p, custom, |part| FocusId::of(&format!("{part:?}")));
+        }
+        fc.begin_frame();
+        parts(l)
+            .into_iter()
+            .map(|(part, _)| {
+                let id = FocusId::of(&format!("{part:?}"));
+                let info = fc
+                    .entries()
+                    .find(|(eid, _, _)| *eid == id)
+                    .map(|(_, _, info)| info.clone())
+                    .unwrap_or_else(|| panic!("{part:?} never registered"));
+                (part, info)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_part_reports_a_human_name_and_not_its_debug_variant() {
+        //! The foundation pass placeholdered `AccessInfo::new(role,
+        //! format!("{part:?}"))` at every registration — a screen reader
+        //! would have read out `"Base(2)"` and `"Custom(1)"`. This is the
+        //! fix, checked both ways: NO part answers with its own Debug
+        //! spelling, and the parts a person actually reaches for answer
+        //! with the word this control's own doc comments already use for
+        //! them.
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 2);
+        let p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
+        let custom = [Color::WHITE, Color::BLACK];
+        let by_part = registered_access(&l, &p, &custom);
+        for (part, info) in &by_part {
+            assert_ne!(
+                info.name,
+                format!("{part:?}"),
+                "{part:?} still reports its Debug-derived identity, not a name"
+            );
+        }
+        let name_of =
+            |want: Part| by_part.iter().find(|(part, _)| *part == want).unwrap().1.name.clone();
+        assert_eq!(name_of(Part::Field), "Hue and value");
+        // `Part::Value` is the BAR, and the bar answers for saturation
+        // since the axis swap (`Picker::value_at`'s own note) — its name
+        // must say what it moves today, not what the variant is called.
+        assert_eq!(name_of(Part::Value), "Saturation");
+        assert_eq!(name_of(Part::Format), "Colour notation");
+        assert_eq!(name_of(Part::Text), format!("{} value", p.format.word()));
+        assert_eq!(name_of(Part::Base(0)), "Preset colour");
+        assert_eq!(name_of(Part::Custom(1)), "Custom colour");
+        assert_eq!(name_of(Part::Add), "Save current colour");
+    }
+
+    #[test]
+    fn each_part_reports_the_role_it_actually_plays() {
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 2);
+        let p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
+        let custom = [Color::WHITE, Color::BLACK];
+        let by_part = registered_access(&l, &p, &custom);
+        for (part, info) in &by_part {
+            let want = match part {
+                // Dragged, which is what a bridge means by `Role::Slider`.
+                Part::Field | Part::Value => Role::Slider,
+                // The one part a person types into.
+                Part::Text => Role::TextInput,
+                // Everything else answers a PRESS — a step, a pick or a
+                // bank — never a dragged position.
+                Part::Format | Part::Base(_) | Part::Custom(_) | Part::Add => Role::Button,
+            };
+            assert_eq!(info.role, want, "{part:?} has the wrong role");
+        }
+    }
+
+    #[test]
+    fn each_part_announces_its_current_reading_and_not_just_its_identity() {
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), 2);
+        let mut p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
+        // Off the construction defaults, so a test that read back a
+        // stale placeholder value would not pass by accident.
+        p.pick_field(0.7, 0.2);
+        p.pick_value(0.35);
+        let custom = [Color::WHITE, Color::BLACK];
+        let by_part = registered_access(&l, &p, &custom);
+        let value_of = |want: Part| {
+            by_part
+                .iter()
+                .find(|(part, _)| *part == want)
+                .unwrap()
+                .1
+                .value
+                .clone()
+                .unwrap_or_else(|| panic!("{want:?} has no reading"))
+        };
+        let index_of = |want: Part| by_part.iter().find(|(part, _)| *part == want).unwrap().1.index;
+
+        assert_eq!(
+            value_of(Part::Field),
+            format!("hue {:.0}°, value {:.0}%", p.hsv[0], p.hsv[2] * 100.0)
+        );
+        assert_eq!(value_of(Part::Value), format!("{:.0}%", p.hsv[1] * 100.0));
+        assert_eq!(value_of(Part::Format), p.format.word());
+        assert_eq!(value_of(Part::Text), p.text());
+        // The swatches' readings are the colour itself, RGBA and not
+        // RGB: a swatch can carry alpha (`swatch`'s own chequerboard is
+        // why) and a notation that dropped the byte would misreport a
+        // transparent cell as opaque.
+        assert_eq!(value_of(Part::Base(0)), write(base_colours()[0], Format::Rgba));
+        assert_eq!(value_of(Part::Custom(1)), write(custom[1], Format::Rgba));
+        assert_eq!(value_of(Part::Add), write(p.colour(), Format::Rgba));
+        // And the grid cells carry their place in the set
+        // (`AccessInfo::index`'s own doc: a tab's `(2, 5)` among five).
+        assert_eq!(index_of(Part::Base(0)), Some((1, base_colours().len() as u32)));
+        assert_eq!(index_of(Part::Custom(1)), Some((2, custom.len() as u32)));
     }
 }
