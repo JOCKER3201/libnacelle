@@ -1244,7 +1244,7 @@ panel_edge.tube_bands = 5
                     # only has to shape the short reach cutoff leaves it,
                     # not the whole of `radius`, so its own original
                     # derivation is exact again.
-panel_edge.tube_cutoff = 0.064
+panel_edge.tube_cutoff = 0.3
                     # how much of `radius` the light actually gets to
                     # spend, as a fraction; -; frac, 0.0 .. 1.0; read only
                     # under falloff = tube. Past `radius * tube_cutoff` no
@@ -1253,11 +1253,14 @@ panel_edge.tube_cutoff = 0.064
                     # background past a chosen point rather than only
                     # close to it (`decay`, alone, cannot do this: see
                     # that key's own doc for the measurement that showed
-                    # why). 0.064 (2026-08-24) is ~2.5px of core-adjacent
-                    # glow at `radius = 4u` on the reference screen this
-                    # was checked against (2.5 / ~39px); re-measure if
-                    # `radius` or the reference screen changes, the same
-                    # way `tube_decay`'s own number was. 1.0 is no cutoff
+                    # why). 0.3 (2026-08-24) reads as a lightsaber blade —
+                    # a real, coloured glow around the core, not only a
+                    # bright line — where the first number tried, 0.064
+                    # (~2.5px on the reference screen), read on screen as
+                    # a plain white edge with next to no glow at all: a
+                    # hard boundary is not the same request as a small
+                    # one, and this key answers only the first. Re-measure
+                    # if `radius` or the reference screen changes, the
                     # at all — every picture this key did not exist to
                     # change.
 

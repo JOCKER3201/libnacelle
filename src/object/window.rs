@@ -1095,7 +1095,7 @@ mod tests {
             ("tube_bands", |t| t.profile.bands as f32, master.profile.bands as f32, [
                 1.0, 3.0, 9.0,
             ]),
-            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.3, 1.0]),
+            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.55, 1.0]),
         ];
         for (key, read, mine, asked) in seen {
             for want in asked {
