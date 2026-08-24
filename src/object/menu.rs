@@ -21,7 +21,8 @@
 //! class `menu.item` tokens and the `motion.menu_unfold` clock; the
 //! module holds no literal of its own.
 
-use crate::focus::{Key, KeyEv, Mods};
+use crate::access::{AccessInfo, Role, States};
+use crate::focus::{Caps, FocusId, Key, KeyEv, Mods};
 use crate::theme::{self, bake::StateStyle, parse::State, Color, TokenId};
 use crate::{ui, Ctx, Rect};
 use std::sync::OnceLock;
@@ -118,6 +119,16 @@ pub struct MenuState {
     /// Opening point (cursor, control corner). Preferred growth is
     /// right+down from here; [`place`] flips when out of room.
     at: (f32, f32),
+    /// This level's [`FocusId`] root for [`MenuState::draw`]'s per-row
+    /// accessible reporting: a row registers as `path.item(row index)`,
+    /// and [`MenuState::open_sub`] gives the child level `path` =
+    /// `self.path.item(parent row)`, so a menu and its one open submenu
+    /// never hand a bridge the same id for two different rows. Fixed at
+    /// `"menu"` for the root rather than taken from a caller, unlike a
+    /// dropdown's `AccordionStyle::focus` — this module's own doc is
+    /// that the application keeps at most ONE open menu at a time, so
+    /// there is only ever one root to name.
+    path: FocusId,
     /// The `motion.menu_unfold` clock: the moment this level opened.
     /// Non-finite = not stamped yet; the first draw stamps it (a
     /// submenu is opened by key/click handlers that hold no clock).
@@ -160,6 +171,7 @@ impl MenuState {
         MenuState {
             entries,
             at: (x, y),
+            path: FocusId::of("menu"),
             opened_t: t,
             hi: None,
             hi_kbd: false,
@@ -473,6 +485,13 @@ impl MenuState {
         // ---- rows -------------------------------------------------------
         let hint_ink = col(t.color(tok(&HINT_C, "component.menu.hint")));
         let sub_open = self.sub.as_ref().map(|(i, _)| *i);
+        // Accessible position-in-set counts ITEMS only — a separator is
+        // not a stop a screen reader numbers. `item_count` is fixed once
+        // over the same rule `item_pos` advances by, below, so the two
+        // never disagree about what a "set" is.
+        let item_count =
+            self.entries.iter().filter(|e| matches!(e, MenuEntry::Item(_))).count() as u32;
+        let mut item_pos: u32 = 0;
         for (i, e) in self.entries.iter().enumerate() {
             let (full_r, _) = self.rows[i];
             let top = full_r.y - (self.rect.y + pad);
@@ -517,6 +536,28 @@ impl MenuState {
                     } else {
                         State::Idle
                     };
+                    item_pos += 1;
+                    // Accessible reporting rides `ctx.focus`, not
+                    // `ctx.access`: a row here is exactly the FOCUSABLE
+                    // case `crate::access`'s header carves out for
+                    // `FocusCtl::register` — one of several, with a
+                    // position — even though the router never calls
+                    // `FocusCtl::nav()` on it: this module's own `key`
+                    // and `click` own every key and click outright while
+                    // a menu is open (see the module doc), so Tab never
+                    // reaches these rows from outside it. Registered at
+                    // `full_r`, not the mid-unfold `r` — the logical row,
+                    // not this frame's animation.
+                    if let Some(fc) = ctx.focus.as_deref_mut() {
+                        let mut states = States::NONE;
+                        if self.hi == Some(i) {
+                            states = states | States::SELECTED;
+                        }
+                        let access = AccessInfo::new(Role::MenuItem, it.label.as_str())
+                            .with_states(states)
+                            .with_index(item_pos, item_count);
+                        fc.register(self.path.item(i), full_r, Caps::NONE, access);
+                    }
                     // Crossfaded under `motion.hover` / `.select` /
                     // `.disable`. The row's IDLE rung keeps the ladder's
                     // text — a resting label is a themed colour — but no
@@ -669,6 +710,9 @@ impl MenuState {
         };
         if let Some(entries) = items {
             let mut sub = MenuState::open_at(entries, 0.0, 0.0, f64::NAN);
+            // A child level's own root, so its rows' accessible ids never
+            // collide with this level's (see `path`'s doc).
+            sub.path = self.path.item(i);
             // Keyboard entry into a submenu starts on its first row.
             if self.hi_kbd {
                 sub.move_hi(1);
@@ -1121,6 +1165,108 @@ mod tests {
     fn a_rule_takes_its_breathing_plus_stroke() {
         assert_eq!(entry_h(&MenuEntry::Rule, 24.0, 8.4, 1.2), 18.0);
         assert_eq!(entry_h(&item("X", 1), 24.0, 8.4, 1.2), 24.0);
+    }
+
+    // ---- accessible reporting --------------------------------------------
+
+    /// Draws `f` twice against a real [`crate::focus::FocusCtl`]
+    /// (`drawn_text`'s harness leaves `focus: None`, which is right for
+    /// the face tests but answers nothing here) and hands back the
+    /// second, completed frame's registrations.
+    ///
+    /// Twice, not once: a level's `opened_t` is stamped on its OWN first
+    /// draw ([`MenuState::draw`]'s very first lines) — a submenu opened
+    /// by `Key::Right` inside `f` reaches that first draw with a clock
+    /// that has not started yet, so `motion.menu_unfold` reads 0 elapsed
+    /// and nothing of it is visible (or registered) THAT frame, exactly
+    /// as `click_routes_to_the_deepest_level_first` above has to fabricate
+    /// geometry rather than draw once for the same reason. A second draw,
+    /// a long stretch of clock later, catches every level at rest.
+    fn registered(mut f: impl FnMut(&mut Ctx)) -> Vec<(FocusId, Rect, AccessInfo)> {
+        use crate::draw::DrawList;
+        use crate::focus::FocusCtl;
+        use crate::font::FontSystem;
+        use crate::pointer::Pointer;
+        let mut fc = FocusCtl::new();
+        for t in [1000.0, 2000.0] {
+            let mut dl = DrawList::new();
+            let mut fonts = FontSystem::new();
+            let mut ctx = Ctx {
+                access: None,
+                dl: &mut dl,
+                fonts: &mut fonts,
+                w: 1920.0,
+                h: 1080.0,
+                t,
+                mouse: Pointer::new(-1.0, -1.0),
+                term_font_scale: 1.0,
+                ui_font_scale: 1.0,
+                panel_scale: 1.0,
+                focus: Some(&mut fc),
+                tips: None,
+            };
+            f(&mut ctx);
+            fc.begin_frame();
+        }
+        fc.entries().map(|(id, r, a)| (id, r, a.clone())).collect()
+    }
+
+    /// One row per ITEM — never the rule — each `Role::MenuItem`, named
+    /// for its label, and positioned in a set that does not count the
+    /// rule either: COPY / (rule) / CLEAR(disabled) / PASTE is items
+    /// 1..3, not 1..4.
+    #[test]
+    fn rows_register_as_menu_items_positioned_among_items_only() {
+        let mut m = menu();
+        let rows = registered(|ctx| {
+            m.draw(ctx);
+        });
+        assert_eq!(rows.len(), 3, "COPY, CLEAR, PASTE — the rule registers nothing");
+        let names: Vec<&str> = rows.iter().map(|(_, _, a)| a.name.as_str()).collect();
+        assert_eq!(names, ["COPY", "CLEAR", "PASTE"]);
+        for (_, _, a) in &rows {
+            assert_eq!(a.role, Role::MenuItem);
+        }
+        assert_eq!(rows[0].2.index, Some((1, 3)));
+        assert_eq!(rows[1].2.index, Some((2, 3)));
+        assert_eq!(rows[2].2.index, Some((3, 3)));
+    }
+
+    /// The keyboard highlight — and only it — carries `States::SELECTED`;
+    /// an unhighlighted row's states stay empty, disabled or not.
+    #[test]
+    fn only_the_highlighted_row_reports_selected() {
+        let mut m = menu();
+        m.key(&ev(Key::Down)); // highlights COPY (row 0, item 1)
+        let rows = registered(|ctx| {
+            m.draw(ctx);
+        });
+        assert!(rows[0].2.states.contains(States::SELECTED), "COPY is highlighted");
+        assert!(!rows[1].2.states.contains(States::SELECTED), "CLEAR is not");
+        assert!(!rows[2].2.states.contains(States::SELECTED), "PASTE is not");
+    }
+
+    /// A parent level and its one open submenu draw in the same frame
+    /// (submenu on top); their rows must not collide on id, or a bridge
+    /// reading both would see one overwrite the other.
+    #[test]
+    fn a_submenu_s_rows_never_share_an_id_with_its_parent_s() {
+        let mut m = with_sub();
+        m.key(&ev(Key::Down)); // PLAIN
+        m.key(&ev(Key::Down)); // MORE
+        m.key(&ev(Key::Right)); // opens the submenu
+        let rows = registered(|ctx| {
+            m.draw(ctx);
+        });
+        // PLAIN, MORE (parent level) + A, B (submenu level).
+        assert_eq!(rows.len(), 4);
+        let ids: Vec<_> = rows.iter().map(|(id, ..)| *id).collect();
+        for (idx, id) in ids.iter().enumerate() {
+            assert!(
+                ids.iter().skip(idx + 1).all(|other| other != id),
+                "id {id:?} (row {idx}) repeats in the same frame: {ids:?}"
+            );
+        }
     }
 
     // ---- face -----------------------------------------------------------
