@@ -26,6 +26,9 @@
 //! * [`table`] — [`table::solve_widths`], the column-width solver lifted
 //!   out of `ui::table` unchanged, and [`table::TableState`], what a
 //!   table remembers between frames.
+//! * [`table_model`] — [`table_model::TableModel`]: where a table's rows
+//!   come from, `RowModel`'s twin for a row of N arbitrary columns
+//!   instead of one label and one status.
 //! * [`list`] — the virtualised row list: chip, label, status, bar.
 //! * [`tree`] — [`tree::FlatTree`]: nested data flattened to a row list,
 //!   so a tree is a MODEL and never a second view.
@@ -43,6 +46,7 @@ pub mod paint;
 pub mod scroll;
 pub mod surface;
 pub mod table;
+pub mod table_model;
 pub mod tree;
 pub mod virt;
 
@@ -52,5 +56,6 @@ pub use model::{RowBuf, RowModel, Rows};
 pub use scroll::{ScrollView, Snap};
 pub use surface::{AbiSurface, CtxSurface, Surface};
 pub use table::{Extent, SortDir, TableState};
+pub use table_model::TableModel;
 pub use tree::{FlatTree, TreeModel};
 pub use virt::{row_window, RowWindow};
