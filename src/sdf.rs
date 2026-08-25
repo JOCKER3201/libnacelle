@@ -281,12 +281,52 @@ pub fn coverage(d: f32, w: f32) -> f32 {
 ///
 /// `stroke` is the band's width in the field's own units — inward is
 /// the project's convention, [`crate::draw::DrawList::ring`]'s own.
+///
+/// EXACT ON A STRAIGHT EDGE UNDER EITHER CORNER RULE. Since 2026-08-25
+/// a Box's band reads its inner boundary off a SECOND silhouette
+/// ([`band_inner_d`]) rather than this same-field offset, but the two
+/// agree everywhere a corner is not: the inner box's field along a
+/// straight edge IS `d + stroke`. Every 1-D claim below — the mass
+/// rule, the hairline, the shared edge — is a straight-edge claim, and
+/// this stays their reference; what the second silhouette changes is
+/// only WHERE the inner boundary bends, which is [`band_inner_d`]'s to
+/// say.
 pub fn band_coverage(d: f32, stroke: f32, w: f32) -> f32 {
     // Non-increasing in its argument, so the difference is already
     // non-negative and never exceeds the silhouette's coverage; the
     // clamp is against the last bit of the subtraction, not against the
     // mathematics.
     (coverage(d, w) - coverage(d + stroke, w)).max(0.0)
+}
+
+/// The signed distance to a record's band's own INNER contour — the
+/// mirror of the shader's `band_inner_d`, argument for argument
+/// (2026-08-25, the equal-rounding rule; the owner's word: "wewnątrz
+/// róg ma być tak samo zaokrąglony jak na zewnątrz").
+///
+/// A Box's band used to end on the same field's `d + stroke` isoline —
+/// the concentric answer, an inner corner of `R − stroke` that turns
+/// SQUARE the moment the band outgrows the radius. Now it ends on a
+/// SECOND silhouette: the rect inset by the stroke, wearing the same
+/// corner radii, each clamped to the inner rect's own cap exactly as
+/// [`crate::draw::ring_points`] clamps them on the tessellated lane —
+/// so an inner corner is as round as the outer one at every width, and
+/// the two lanes bend in the same place. Every other kind keeps the
+/// offset: its payload describes the outer curve, and shrinking the
+/// half-size alone would not shrink it.
+pub fn band_inner_d(s: &crate::draw::Shape, p: [f32; 2], d: f32) -> f32 {
+    use crate::draw::ShapeKind;
+    let code = (s.flags >> crate::draw::Shape::KIND_SHIFT) & 0xF;
+    if !matches!(ShapeKind::of_code(code), ShapeKind::Box | ShapeKind::Capsule) {
+        return d + s.stroke;
+    }
+    let half_in = [(s.half[0] - s.stroke).max(0.0), (s.half[1] - s.stroke).max(0.0)];
+    let cap_in = half_in[0].min(half_in[1]);
+    let mut corners = record_corners(s);
+    for c in &mut corners {
+        c.size = c.size.min(cap_in);
+    }
+    d_shape(p, half_in, &corners)
 }
 
 /// How many standard deviations of the gaussian fit inside the reach

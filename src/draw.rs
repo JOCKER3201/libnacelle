@@ -857,12 +857,17 @@ impl Corner {
 /// finely the first three are laid down, and the fifth is how much of
 /// `radius` the light is let to spend at all. What is here:
 ///
-/// * `decay` — the distance re-map. 1.0 is the soft disk laid flat
-///   across the reach, which is what every glow in this toolkit drew
-///   before there was a choice. Above 1.0 the profile is pulled in
-///   toward the path: what the disk showed at a third of the reach a
-///   `decay` of 3 shows at a twenty-seventh of it. Light that STOPS is
-///   the difference between a lit tube and a blurred copy of a line.
+/// * `decay` — the exponent on the tube's own ramp, `(1 - f)^decay`
+///   (2026-08-25; see [`GlowProfile::alpha_at`] for what it replaced
+///   and why). 1.0 is a STRAIGHT gradient — the line a graphics
+///   program draws between two stops — and above 1.0 the light leans
+///   toward the glass: steeper right off the core, gentler on the way
+///   down, and STILL exactly zero at the reach, because a polynomial
+///   in `(1 - f)` owes nothing to any asymptote. That termination is
+///   the whole point: the owner's brief was a gradient that ENDS where
+///   its span ends, and no exponential re-map of a gaussian can do
+///   that — it can only chase zero without arriving (the 2026-08-24
+///   measurement on `decay = 50` is quoted under `cutoff`).
 /// * `aura` — a multiplier on the alpha at the path, ramped back to 1.0
 ///   over `aura_reach`. The band of colour a photographed sign keeps
 ///   right against the glass, and the reason a tube reads as coloured at
@@ -880,22 +885,19 @@ impl Corner {
 ///   different tubes — a steeper one around a button than around a panel
 ///   — with nothing in the file saying so.
 /// * `cutoff` — the fraction of `radius` the geometry actually reaches
-///   out to, `0.0 .. 1.0`. `decay` alone can pull an exponential
-///   arbitrarily close to the mask's own zero texel, but "close" is not
-///   "identical" at any point that is not the true rim — the curve is
-///   continuous, so a decay steep enough to look flat by some small
-///   fraction of a LARGE radius still carries a measurable, monotonic
-///   residual the rest of the way out, because that is what a continuous
-///   re-map of one texture sample can and cannot do (2026-08-24's own
-///   measurement: `decay = 50` on a 4u reach still moved the background
-///   channel by four steps over the outer 90% of it, not zero of them).
-///   A cutoff under 1.0 answers a DIFFERENT question than decay does: at
-///   `radius * cutoff` the geometry simply STOPS being extruded — there
-///   is no quad out there for any alpha to be wrong on, additive or
-///   otherwise, which is the one way to be exactly the background and
-///   not only close to it past a chosen point. 1.0 spends the whole of
-///   `radius`, which is every picture this struct drew before this field
-///   existed.
+///   out to, `0.0 .. 1.0`. At `radius * cutoff` the strip simply STOPS
+///   being extruded — no quad exists past it for any alpha to be wrong
+///   on. It was added (2026-08-24) when the tube's falloff was still a
+///   re-mapped gaussian, as the one way to be EXACTLY the background
+///   past a chosen point rather than only close to it: a continuous
+///   re-map of one texture sample can chase the mask's zero texel but
+///   never sit on it (that day's measurement: `decay = 50` on a 4u
+///   reach still moved the background channel by four steps over the
+///   outer 90% of it). The 2026-08-25 rewrite made the curve itself
+///   terminate — `alpha_at`'s ramp is exactly 0.0 at the reach — so
+///   1.0, the identity, is now the working value: the ramp ends where
+///   the geometry does. Under 1.0 it still means what it always did,
+///   an earlier hard stop, with the ramp compressed into what is left.
 ///
 /// Every one of them arrives from a theme token. Nothing in this file
 /// chooses a value; [`GlowProfile::HALO`] is not a design default but the
@@ -988,53 +990,77 @@ impl GlowProfile {
         m
     }
 
-    /// The mask's v at distance fraction `f` of the reach, between the
-    /// disk's peak `vi` on the path and its zero `v0` at the rim.
+    /// The mask's v at distance fraction `f` of the reach.
     ///
-    /// The two ENDS ARE EXACT and not the formula's answer at 0 and 1,
-    /// which is what lets a halo's band land on the same texel the
-    /// unshaped emitter used to hand it: `vi + (v0 - vi) * 1.0` is not
-    /// `v0` in binary floating point, and one texel of drift is a
-    /// different picture for a proof that compares vertices.
+    /// FOR THE HALO: between the disk's peak `vi` on the path and its
+    /// zero `v0` at the rim, and the two ENDS ARE EXACT rather than the
+    /// formula's answer at 0 and 1 — which is what lets a halo's band
+    /// land on the same texel the unshaped emitter used to hand it:
+    /// `vi + (v0 - vi) * 1.0` is not `v0` in binary floating point, and
+    /// one texel of drift is a different picture for a proof that
+    /// compares vertices.
+    ///
+    /// FOR THE TUBE: `vi`, everywhere, and that constancy is the
+    /// 2026-08-25 rewrite in one line. The tube used to walk the same
+    /// gaussian band the halo walks, re-mapped by `decay` — and a
+    /// gaussian is a curve with a TAIL: past its visible body it only
+    /// approaches the background, never reaches it, however hard the
+    /// re-map leans on it (the sketch that settled it: a gradient drawn
+    /// in a graphics program ENDS at its far stop; this one dragged on).
+    /// Pinning the texture to the disk's peak takes the sprite out of
+    /// the falloff business entirely — the strip samples one texel,
+    /// worth 1.0 — and hands the whole curve to [`GlowProfile::
+    /// alpha_at`]'s vertex ramp, a polynomial that owes nothing to any
+    /// asymptote and is exactly 0.0 where the reach ends.
     fn v_at(&self, f: f32, vi: f32, v0: f32) -> f32 {
+        if !self.is_halo() {
+            return vi;
+        }
         if f <= 0.0 {
             return vi;
         }
         if f >= 1.0 {
             return v0;
         }
-        let s = if self.decay == 1.0 { f } else { f.powf(1.0 / self.decay) };
-        vi + (v0 - vi) * s
+        vi + (v0 - vi) * f
     }
 
     /// The alpha at distance fraction `f`, given the caller's own.
     ///
-    /// EXACTLY 0.0 AT THE RIM, BY THE VERTEX AND NOT BY THE TEXTURE. The
-    /// mask sprite's own edge texel is baked to 0.0 (`bake_masks`'s own
-    /// `d >= r` branch), and the ring at `f = 1.0` samples exactly that
-    /// texel (`v_at`'s own `f >= 1.0 => v0` branch) — so in principle the
-    /// additive blend already lands on nothing past the reach. In
-    /// practice the GPU's own bilinear filter reads a NEIGHBOURHOOD of
-    /// texels around the sample point, not one, and this sprite shares
-    /// an atlas with everything else the font system packs — a rim
-    /// sampled a half-texel short of the edge, or packed with no margin
-    /// past it, blends in whatever sits next to it in the shelf. Before
-    /// this the fade past the reach was carried ENTIRELY by that
-    /// sampling being exact; now the vertex alpha the caller multiplies
-    /// against is *itself* zero at the rim, so even a mis-sampled
-    /// texture is multiplied against nothing and still lands on nothing.
-    /// The two ARE the same picture inside the reach — this changes
-    /// nothing `f < 1.0` was already answering — and are no longer only
-    /// hopefully the same picture at it.
+    /// THE TUBE'S WHOLE CURVE LIVES HERE (2026-08-25): `alpha * (1 -
+    /// f)^decay`, lifted by the aura near the glass. The rasteriser
+    /// interpolates vertex alpha linearly between the rings [`GlowProfile
+    /// ::stops`] lays, so what lands on screen is that ramp read at the
+    /// stops and straight lines between them — piecewise-linear, but
+    /// every knot is ON the curve and the last knot is EXACTLY 0.0 at
+    /// `f = 1.0`, which no re-map of the mask's gaussian could say (see
+    /// `v_at` for what this replaced and the sketch that forced it).
+    ///
+    /// EXACTLY 0.0 AT THE RIM, BY THE VERTEX AND NOT BY THE TEXTURE —
+    /// the guarantee fc089a7 added and this rewrite keeps. The mask
+    /// sprite's own edge texel is baked to 0.0 (`bake_masks`'s own
+    /// `d >= r` branch), but the GPU's bilinear filter reads a
+    /// NEIGHBOURHOOD of texels, not one, and the sprite shares an atlas
+    /// with everything else the font system packs — so the fade must
+    /// never be the sampling's to finish. Here the vertex alpha the
+    /// texture is multiplied against is itself zero at the rim; a
+    /// mis-sampled texel is multiplied into nothing and lands on
+    /// nothing. The halo keeps its own answer: the caller's alpha,
+    /// untouched inside the reach, zero at it.
     fn alpha_at(&self, f: f32, alpha: f32) -> f32 {
         if f >= 1.0 {
             return 0.0;
         }
+        let base = if self.is_halo() {
+            alpha
+        } else {
+            alpha * (1.0 - f).powf(self.decay)
+        };
         if !self.lifts() {
-            return alpha;
+            return base;
         }
         let t = (f / self.aura_reach).clamp(0.0, 1.0);
-        (alpha * (1.0 + (self.aura - 1.0) * (1.0 - t))).min(1.0)
+        (base * (1.0 + (self.aura - 1.0) * (1.0 - t))).min(1.0)
     }
 }
 
@@ -2358,7 +2384,20 @@ impl DrawList {
             (r.w - 2.0 * t).max(0.0),
             (r.h - 2.0 * t).max(0.0),
         );
-        let ci = [c[0].inset(t), c[1].inset(t), c[2].inset(t), c[3].inset(t)];
+        // The inner contour wears the SAME corners as the outer one
+        // (2026-08-25, the owner's word: "wewnątrz róg ma być tak samo
+        // zaokrąglony jak na zewnątrz"). It used to inset the radius by
+        // the band's own width — the concentric CSS answer — which
+        // reads right on a hairline and collapses to a SQUARE inner
+        // corner the moment the band grows past the radius, exactly the
+        // picture the owner rejected. Same radius, same style; only the
+        // rect moves in. `ring_points` clamps a radius to half the
+        // inner rect's short side on its own, so a band deep enough to
+        // out-eat the corner still closes cleanly. The band runs a
+        // touch thicker across a corner's diagonal (√2·t at the apex of
+        // a round corner) — the cost of an inner corner that never
+        // sharpens, and the vector lane's field pays it identically.
+        let ci = *c;
         let mut outer = std::mem::take(&mut self.scratch_a);
         let mut inner = std::mem::take(&mut self.scratch_b);
         ring_points(r, c, segments, &mut outer);
@@ -2614,12 +2653,13 @@ impl DrawList {
                 (gr.w - 2.0 * inset_in).max(0.0),
                 (gr.h - 2.0 * inset_in).max(0.0),
             );
-            let inner_c = [
-                gcorner(0).inset(inset_in),
-                gcorner(1).inset(inset_in),
-                gcorner(2).inset(inset_in),
-                gcorner(3).inset(inset_in),
-            ];
+            // The inner contour wears the same corners as the outer one
+            // (2026-08-25, `ring_verts`' own rule — see the note there);
+            // `ring_points` caps them against the inner rect. This is
+            // also what keeps the painted gradient over the record's
+            // band at the corners now that the record's inner boundary
+            // bends at the full radius (`band_inner_d`).
+            let inner_c = [gcorner(0), gcorner(1), gcorner(2), gcorner(3)];
             (outer_r, outer_c, inner_r, inner_c)
         } else {
             let inner_r = Rect::new(
@@ -2628,8 +2668,8 @@ impl DrawList {
                 (r.w - 2.0 * t).max(0.0),
                 (r.h - 2.0 * t).max(0.0),
             );
-            let ci = [c[0].inset(t), c[1].inset(t), c[2].inset(t), c[3].inset(t)];
-            (r, *c, inner_r, ci)
+            // Same corners inside as outside — `ring_verts`' own rule.
+            (r, *c, inner_r, *c)
         };
         let mut outer = std::mem::take(&mut self.scratch_a);
         let mut inner = std::mem::take(&mut self.scratch_b);
@@ -5294,16 +5334,14 @@ mod tests {
         );
     }
 
-    /// THE TUBE'S LIGHT STOPS WHERE THE HALO'S IS STILL FADING.
-    ///
-    /// Read off the emitted geometry rather than off a formula, and as a
-    /// RELATION rather than against a number: for every distance the tube
-    /// puts a band boundary at, the mask is sampled CLOSER TO ITS ZERO
-    /// than the halo samples it at that same distance. The mask's own
-    /// profile falls monotonically from `vi` to `v0`, so a smaller v at
-    /// the same place is less light at that place, whatever the disk is
-    /// shaped like — which is what makes this a claim about the tube and
-    /// not about the sprite it borrows.
+    /// THE TUBE'S LIGHT STOPS WHERE THE HALO'S IS STILL FADING — and
+    /// since 2026-08-25 the whole claim lives on the VERTEX ALPHA, not
+    /// the texture. The tube pins its texture to the disk's peak (one
+    /// texel, worth 1.0 — see `v_at`) and carries the falloff as the
+    /// ramp `alpha * (1-f)^decay`, so at every interior distance the
+    /// vertex alpha sits strictly below the caller's own `alpha` — the
+    /// flat lay a halo would carry there — and at the rim it is exactly
+    /// 0.0, which is the end a gaussian could never reach.
     ///
     /// Both are drawn at the same radius on purpose: a glow that merely
     /// reached less far would be a smaller halo, and the owner asked for
@@ -5332,32 +5370,46 @@ mod tests {
         for v in &dl.verts {
             let d = dist(v.pos);
             let f = (d / radius).clamp(0.0, 1.0);
-            // The halo's own sample at this distance: the flat lay.
-            let halo_v = vi + (v0 - vi) * f;
-            let got = v.uv[1];
+            // The texture is out of the falloff business: one texel, the
+            // disk's peak, whatever the distance.
+            assert!(
+                (v.uv[1] - vi).abs() < 1e-6,
+                "the tube sampled {} at {:.0}% of the reach; the peak texel {vi} is the \
+                 only one a terminating ramp reads",
+                v.uv[1],
+                f * 100.0
+            );
+            let a = v.color[3];
             if f > 0.001 && f < 0.999 {
                 seen_interior = true;
+                let want = col.a * (1.0 - f).powf(tube.decay);
                 assert!(
-                    got < halo_v - 1e-6,
-                    "at {:.0}% of the reach the tube sampled {got} where the halo \
-                     samples {halo_v}; the tube is not falling faster",
+                    a < col.a - 1e-6,
+                    "at {:.0}% of the reach the tube carries {a} where the halo would \
+                     carry {}; the tube is not falling faster",
+                    f * 100.0,
+                    col.a
+                );
+                assert!(
+                    (a - want).abs() < 1e-5,
+                    "at {:.0}% of the reach the tube carries {a}, off its own ramp's {want}",
                     f * 100.0
                 );
             }
-            assert!(
-                got >= v0 - 1e-6 && got <= vi + 1e-6,
-                "the tube sampled {got}, outside the disk's own band {v0}..{vi}"
-            );
         }
         assert!(
             seen_interior,
             "every band landed on an end of the reach, so nothing was compared"
         );
-        // The ends are still the ends: light at the glass, none at the rim.
-        let uv1: Vec<f32> = dl.verts.iter().map(|v| v.uv[1]).collect();
-        assert!(uv1.iter().any(|&v| (v - vi).abs() < 1e-6), "no band starts at the glass");
-        assert!(uv1.iter().any(|&v| (v - v0).abs() < 1e-6), "no band ends at the rim");
-        let _ = u0;
+        // The ends are still the ends: the caller's own light at the
+        // glass, EXACTLY none at the rim — by the vertex.
+        let alphas: Vec<f32> = dl.verts.iter().map(|v| v.color[3]).collect();
+        assert!(
+            alphas.iter().any(|&a| (a - col.a).abs() < 1e-6),
+            "no band starts at the glass with the caller's own alpha"
+        );
+        assert!(alphas.iter().any(|&a| a == 0.0), "no band ends at an exact zero");
+        let _ = (u0, v0);
     }
 
     /// A tube throws light INTO the frame too: the inner face lands
@@ -5407,11 +5459,15 @@ mod tests {
             // panel's middle.
             let depth = (px - r.x).min(r.right() - px).min(py - r.y).min(r.bottom() - py);
             assert!(depth <= radius + e, "the inner face reached past its radius: depth {depth}");
-            saw_peak |= (v.uv[1] - vi).abs() < 1e-6;
-            saw_rim |= (v.uv[1] - v0).abs() < 1e-6;
+            // The peak is a texture claim (the one texel the ramp reads);
+            // the letting-go is the VERTEX's, an exact zero — the
+            // terminating ramp of 2026-08-25, same as the outer face.
+            saw_peak |= (v.uv[1] - vi).abs() < 1e-6 && (v.color[3] - col.a).abs() < 1e-6;
+            saw_rim |= v.color[3] == 0.0;
         }
         assert!(saw_peak, "no band sits at the glass — the peak is not on the border");
-        assert!(saw_rim, "no band fades to nothing — the light never lets go");
+        assert!(saw_rim, "no band fades to an exact zero — the light never lets go");
+        let _ = v0;
 
         // The two faces stand on opposite sides of the path: the outer
         // bloom is entirely outside the same rect the inner face is
@@ -5476,28 +5532,28 @@ mod tests {
         }
     }
 
-    /// THE AURA IS BRIGHTER THAN THE LIGHT IT SITS IN, IT LETS GO WHERE
-    /// THE THEME SAYS, AND IT REACHES EXACTLY 0 AT THE RIM — measured on
-    /// the picture, not on the rings.
+    /// THE TUBE IS A GRADIENT THAT ENDS — the ramp `alpha * (1-f)^decay`
+    /// lifted by the aura near the glass, knots ON the curve, straight
+    /// lines between them, and EXACTLY 0 at the rim — measured on the
+    /// picture, not on the rings (2026-08-25, the terminating-curve
+    /// rewrite; `alpha_at`'s own doc carries the sketch that forced it).
     ///
-    /// A relation, as everywhere here: the alpha at the glass is above
-    /// the alpha the caller asked for, the alpha anywhere past the reach
-    /// and short of the final band is exactly it, the final band ramps
-    /// that down to exactly 0 at the rim (`alpha_at`'s own `f >= 1.0`
-    /// branch — the vertex is zero there BY CONSTRUCTION, not by the
-    /// texture sample landing on the mask's own zero texel; see that
-    /// function's doc for why the vertex has to carry this and not only
-    /// the texture), and nothing anywhere leaves 0..1 — a blend factor
-    /// outside that range is the undefined output the master warns about
-    /// at `glow.panel_edge.color`.
-    ///
-    /// What makes it a claim about the REACH and not about the rings is
-    /// [`alpha_ramp`]: it walks fractions the emitter never put a vertex
-    /// at and asks what a fragment there would be blended with. Run at
-    /// three band counts and three reaches, INCLUDING a reach finer than
-    /// one band, because a reach under `1/bands` is the case an even cut
-    /// cannot express at all; and at two amounts, the second of which the
-    /// aura drives past 1 so the clip is exercised rather than assumed.
+    /// The whole expected picture is rebuilt here from the same knots
+    /// `stops()` lays — the even cut of the reach plus the aura's own
+    /// boundary — with the formula evaluated at each and a straight line
+    /// between, and [`alpha_ramp`]'s reading of the emitted geometry must
+    /// match it at every one of 401 fractions, most of which no vertex
+    /// sits at. On top of the exact match, the shape's own guarantees are
+    /// asserted by name: brighter than the caller's alpha at the glass
+    /// (the aura), monotone non-increasing the whole way (a ramp that
+    /// turns back up is a second band nobody named), inside 0..1
+    /// everywhere (a blend factor outside it is the undefined output the
+    /// master warns about at `glow.panel_edge.color`), and exactly 0.0 at
+    /// the rim BY THE VERTEX, not by a texture sample landing on the
+    /// mask's zero texel. Run at three band counts and three reaches,
+    /// INCLUDING a reach finer than one band, and at two amounts, the
+    /// second of which the aura drives past 1 so the clip is exercised
+    /// rather than assumed.
     #[test]
     fn the_aura_lifts_the_light_at_the_glass_and_lets_go_at_its_reach() {
         let uv = FontSystem::mask_soft_uv();
@@ -5525,12 +5581,33 @@ mod tests {
                         at(0.0),
                         col.a
                     );
-                    // The final band's own start: none of `reach`'s three
-                    // values here ever falls past it, so `stops()` never
-                    // inserts an extra ring inside this last cut and the
-                    // even grid's own last boundary is exactly it.
-                    let last_band_start = (bands - 1) as f32 / bands as f32;
-                    assert!(reach < last_band_start - 1e-3, "test assumption: {p:?}");
+                    // The expected picture, rebuilt from the contract:
+                    // the formula at every knot `stops()` lays (plus the
+                    // glass at 0), straight lines between. The rim knot's
+                    // formula answer IS 0 — `(1 - 1)^decay` — which is
+                    // the terminating end the whole rewrite exists for.
+                    let curve = |f: f32| -> f32 {
+                        if f >= 1.0 {
+                            return 0.0;
+                        }
+                        let lift = 1.0 + (p.aura - 1.0) * (1.0 - (f / reach).clamp(0.0, 1.0));
+                        (col.a * (1.0 - f).powf(p.decay) * lift).min(1.0)
+                    };
+                    let mut knots = vec![0.0f32];
+                    for k in 1..=bands {
+                        let f = k as f32 / bands as f32;
+                        let prev = *knots.last().unwrap();
+                        if reach < f && reach > prev {
+                            knots.push(reach);
+                        }
+                        knots.push(f);
+                    }
+                    let want_at = |f: f32| -> f32 {
+                        let i = knots.partition_point(|g| *g <= f).clamp(1, knots.len() - 1);
+                        let (f0, f1) = (knots[i - 1], knots[i]);
+                        let (a0, a1) = (curve(f0), curve(f1));
+                        a0 + (a1 - a0) * ((f - f0) / (f1 - f0)).clamp(0.0, 1.0)
+                    };
                     // 401 samples across the whole reach, so the strip
                     // between any two rings is walked whatever the cut.
                     let mut last = at(0.0);
@@ -5538,51 +5615,20 @@ mod tests {
                         let f = i as f32 / 400.0;
                         let a = at(f);
                         assert!((0.0..=1.0).contains(&a), "alpha {a} left 0..1 at f={f}, {p:?}");
-                        // "Ramps from tube_aura at the glass to 1.0 here
-                        // and stays there, then to 0 at the rim" — a ramp
-                        // that ever turns back up is a second, brighter
-                        // band nobody named.
                         assert!(
                             a <= last + 1e-6,
-                            "the aura brightened again at {:.1}% of the radius: {a} after \
+                            "the light brightened again at {:.1}% of the radius: {a} after \
                              {last}, at {p:?}",
                             f * 100.0
                         );
                         last = a;
-                        if f > reach + 1e-3 && f < last_band_start - 1e-3 {
-                            assert!(
-                                (a - col.a).abs() < 1e-6,
-                                "the aura was still lifting at {:.1}% of the radius, {:.1}% \
-                                 past its own reach: {a} vs {}, at {p:?}",
-                                f * 100.0,
-                                (f - reach) * 100.0,
-                                col.a
-                            );
-                        } else if f < reach - 1e-3 {
-                            assert!(
-                                a > col.a + 1e-6,
-                                "the aura had already let go at {:.1}% of the radius, inside \
-                                 its own reach of {:.0}%: {a} vs {}, at {p:?}",
-                                f * 100.0,
-                                reach * 100.0,
-                                col.a
-                            );
-                        } else if f > last_band_start + 1e-3 {
-                            // The final band's own straight line from
-                            // `col.a` at its start to exactly 0 at the
-                            // rim — `alpha_ramp` linearly interpolates
-                            // between the two real vertices that bound
-                            // it, so the expected value is that same
-                            // line, not a second measurement of it.
-                            let want =
-                                col.a * (1.0 - (f - last_band_start) / (1.0 - last_band_start));
-                            assert!(
-                                (a - want).abs() < 1e-5,
-                                "the final band did not ramp straight to 0 at the rim: {a} vs \
-                                 {want} at {:.1}% of the radius, {p:?}",
-                                f * 100.0
-                            );
-                        }
+                        let want = want_at(f);
+                        assert!(
+                            (a - want).abs() < 1e-5,
+                            "the picture left the ramp at {:.1}% of the radius: {a} vs the \
+                             contract's {want}, at {p:?}",
+                            f * 100.0
+                        );
                     }
                     assert!(
                         at(1.0).abs() < 1e-6,

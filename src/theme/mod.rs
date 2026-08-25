@@ -1084,6 +1084,23 @@ pub fn clear_preview() {
     publish(t);
 }
 
+/// The lock a test takes BEFORE touching [`set_preview`]/[`clear_preview`]
+/// (2026-08-25) — `ENGINE`'s own mutex protects one mutation, not the
+/// span between a preview going up and `resolved()` reading it back down,
+/// and `cargo test`'s default parallelism runs every test in this
+/// process on its own thread. Without this, one test's preview is a
+/// different theme published under every OTHER test's feet for however
+/// long the two overlap — `nacelle-desktop`'s `theme_test_lock` is the
+/// same guard for the same reason, on the other side of the crate
+/// boundary that also calls this engine.
+#[cfg(test)]
+pub(crate) fn preview_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Whether values are currently laid over the file's own.
 pub fn previewing() -> bool {
     ENGINE

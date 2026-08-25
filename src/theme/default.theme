@@ -1111,16 +1111,21 @@ panel_edge.color = element
                     # glow tint; images 1-6; colour or the word `element`,
                     # which means the panel edge's own resolved colour
 panel_edge.radius = 4u
-                    # how far the glow reaches past the edge; images 1-6;
-                    # u, 0u .. 4u; 0u is the `none` sentinel — draw nothing
-                    # The theme editor's GLOW REACH writes this (BASIC,
-                    # 2026-08-18) and the declared 0u..4u above is the
-                    # track's two ends — the wall is the FILE's, not the
-                    # editor's. 4u (2026-08-23) is that wall's TOP: the
-                    # owner asked for the reach at its maximum by default,
-                    # not at border_edits()'s own undressed-theme seed of
-                    # 1.6u, which is now only where a theme's own first
-                    # lit pick still lands.
+                    # how far the glow reaches past EACH wall of the
+                    # border; images 1-6; u, 0u .. 8.76u; 0u is the
+                    # `none` sentinel — draw nothing. The theme editor's
+                    # EFFECT SIZE writes this (BASIC, 2026-08-18; renamed
+                    # from GLOW REACH 2026-08-25) and its track spans the
+                    # whole declared range now: the top first landed on
+                    # 2.19u — 4mm on the reference monitor's own pixel
+                    # pitch at 3840x2160, back-solved from its 699.48 x
+                    # 394.73mm viewable area — and the owner raised it by
+                    # 300% the same day ("po jednej i drugiej stronie"),
+                    # 2.19u * 4 = 8.76u a side. The old 4u wall moved
+                    # with it; 4u stays this token's shipped default,
+                    # and border_edits()'s undressed-theme seed of 1.6u
+                    # is still only where a theme's own first lit pick
+                    # lands.
 panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube
                     # how the light is spent across the radius; images 1-6,
                     # 7-10. `gauss` is the wide soft halo of images 7 and 10
@@ -1174,26 +1179,24 @@ panel_edge.boost = 2.6
                     # pale core with the hue still in it, not a white line.
                     # 1.0 is no drive and a core of the tube's own colour.
 panel_edge.tube_decay = 3.0
-                    # how much faster than the gauss halo the light falls,
-                    # as the exponent the distance is raised to; -; f,
-                    # >= 1.0; read only under falloff = tube. 1.0 IS the
-                    # gauss halo. 3.0 cubes it: what the halo shows at a
-                    # third of the radius the tube shows at a twenty-seventh
-                    # of it — near the glass everything, past it nothing,
-                    # which is the difference between a lit tube and a
-                    # blurred copy of a line. Was raised as high as 50
-                    # (2026-08-24) chasing "only a couple of px visible"
-                    # through this exponent alone — wrong tool: a
-                    # continuous re-map can get arbitrarily CLOSE to the
-                    # mask's zero texel but is identical to it at no
-                    # fraction short of 1.0, so however steep, some
-                    # residual survived the whole way out to `radius`
-                    # (measured: even 50 still moved the background
-                    # channel visibly across the outer 90% of a 4u reach).
-                    # `tube_cutoff` answers that question now — decay's
-                    # own job is only the shape INSIDE the reach cutoff
-                    # leaves it, which is exactly what 3.0 was already
-                    # right for before either of them existed.
+                    # the exponent on the tube's ramp, `(1 - d/reach) ^
+                    # decay`; -; f, >= 1.0; read only under falloff =
+                    # tube. THE CURVE TERMINATES (2026-08-25): whatever
+                    # this says, the ramp is exactly zero at the reach —
+                    # a polynomial owes nothing to any asymptote — so
+                    # this key shapes only HOW the light spends itself on
+                    # the way there, never whether it arrives. 1.0 is a
+                    # straight gradient, the line a graphics program lays
+                    # between two stops; 3.0 leans it into the glass —
+                    # steep off the core, gentle on the landing — which
+                    # is the sketched profile the owner settled the
+                    # rewrite with. The gaussian this replaced could not
+                    # end: its re-map chased the mask's zero texel
+                    # without ever sitting on it (2026-08-24, measured
+                    # at decay 50: the background channel still moved
+                    # across the outer 90% of a 4u reach), which is why
+                    # every earlier number here was chasing the wrong
+                    # thing.
 panel_edge.tube_aura = 2.0
                     # how much stronger than `alpha` the colour is laid
                     # immediately outside the tube; -; f, >= 1.0; read only
@@ -1211,58 +1214,66 @@ panel_edge.tube_aura_reach = 0.25
                     # gets, see that key's own doc; -; frac, 0.0 .. 1.0;
                     # read only under falloff = tube. It ramps from
                     # tube_aura at the glass to 1.0 here and stays there.
-                    # 0.25 is derived from tube_decay: a decay of 3 has
-                    # spent nearly all the light inside the first quarter
-                    # of the (cutoff-shortened) reach, so the aura colours
-                    # the light that IS there instead of lifting a tail
-                    # that is not. Was re-derived down to 0.00246 for a
-                    # decay of 13 and further for 50 (2026-08-24) while
-                    # decay alone was standing in for `tube_cutoff`'s own
-                    # job; back to 0.25 now that decay is back to the 3.0
-                    # this number was always right for. 0.0 is no aura at
-                    # all. The number is EXACT on screen whatever tube_bands
-                    # says: the reach is always one of the rings the light
-                    # is cut at, or the picture would let go wherever the
-                    # even cut happened to have one.
+                    # 0.25 keeps the saturated band inside the ramp's own
+                    # brightest quarter — at decay 3 the ramp still holds
+                    # ~42% of its light here (2026-08-25's terminating
+                    # `(1-f)^decay`, see tube_decay), so the aura colours
+                    # light that is really there and lets go well before
+                    # the landing. 0.0 is no aura at all. The number is
+                    # EXACT on screen whatever tube_bands says: the reach
+                    # is always one of the rings the light is cut at, or
+                    # the picture would let go wherever the even cut
+                    # happened to have one.
 panel_edge.tube_bands = 5
                     # how many rings the reach is cut into — the resolution
-                    # of tube_decay's re-map; -; n, 1 .. 16; read only under
+                    # of tube_decay's ramp; -; n, 1 .. 16; read only under
                     # falloff = tube. IT LOOKS LIKE A QUALITY KNOB AND IT IS
-                    # NOT ONE. The mask is sampled continuously inside a
-                    # ring, but the ring BOUNDARIES are where the re-map is
-                    # applied and the picture is a straight line between
-                    # them, so a coarser cut is not a rougher drawing of the
-                    # same curve — it is a different curve. At 1 the re-map
-                    # has nowhere to land and the tube IS the gauss halo,
-                    # whatever tube_decay says. 5 puts a ring every fifth of
-                    # the reach: at decay 3 that is enough to bend the first
-                    # fifth down onto the glass, and it keeps a sprite ring
-                    # cheaper than the maskless shell it replaces. Raise it
-                    # for a steeper decay, at one ring stroke each. Back to
-                    # 5 (2026-08-24) now that `tube_cutoff` carries the job
-                    # a much higher band count was standing in for — decay
-                    # only has to shape the short reach cutoff leaves it,
-                    # not the whole of `radius`, so its own original
-                    # derivation is exact again.
-panel_edge.tube_cutoff = 0.3
-                    # how much of `radius` the light actually gets to
-                    # spend, as a fraction; -; frac, 0.0 .. 1.0; read only
-                    # under falloff = tube. Past `radius * tube_cutoff` no
-                    # geometry is extruded at all — not a small alpha, no
-                    # quad — which is the one way to be exactly the
-                    # background past a chosen point rather than only
-                    # close to it (`decay`, alone, cannot do this: see
-                    # that key's own doc for the measurement that showed
-                    # why). 0.3 (2026-08-24) reads as a lightsaber blade —
-                    # a real, coloured glow around the core, not only a
-                    # bright line — where the first number tried, 0.064
-                    # (~2.5px on the reference screen), read on screen as
-                    # a plain white edge with next to no glow at all: a
-                    # hard boundary is not the same request as a small
-                    # one, and this key answers only the first. Re-measure
-                    # if `radius` or the reference screen changes, the
-                    # at all — every picture this key did not exist to
-                    # change.
+                    # NOT ONE. The ramp is evaluated at the ring BOUNDARIES
+                    # and the picture is a straight line between them, so a
+                    # coarser cut is not a rougher drawing of the same curve
+                    # — it is a different curve. At 1 the whole reach is a
+                    # single straight line from the glass to zero — the
+                    # tube collapses to a plain linear gradient, whatever
+                    # tube_decay says, because an exponent needs an interior
+                    # ring to show any bend. 5 puts a ring every fifth of
+                    # the reach: enough for decay 3's lean to read, and a
+                    # sprite ring stays cheaper than the maskless shell it
+                    # replaced. Raise it for a steeper decay, at one ring
+                    # stroke each. Every knot lands ON the curve whatever
+                    # this says — the count buys fidelity between knots,
+                    # never the endpoint, which is exactly 0 at the reach
+                    # at any count (2026-08-25).
+panel_edge.tube_cutoff = 1.0
+                    # where the geometry ENDS, as a fraction of `radius`;
+                    # -; frac, 0.0 .. 1.0; read only under falloff =
+                    # tube. Past `radius * tube_cutoff` no quad is
+                    # extruded at all. 1.0 — the identity — is the
+                    # working value since the 2026-08-25 rewrite: the
+                    # tube's ramp (`tube_decay`'s own doc) is exactly
+                    # zero at the reach by construction, so the curve
+                    # and the geometry now end in the same place and
+                    # there is no tail left for a cut to remove. The
+                    # key was added a day earlier (2026-08-24), when the
+                    # falloff was still a re-mapped gaussian that could
+                    # only approach the background, as the one hard stop
+                    # that could finish what that curve never did; it
+                    # stays because it still means what it always did —
+                    # an EARLIER end than `radius`, with the ramp
+                    # compressed into what is left — which a theme is
+                    # free to want on its own account.
+panel_edge.tube_core_sat = 0.70
+                    # the core's HSV saturation — the colour the band
+                    # itself burns at; -; frac, 0.0 .. 1.0; read only
+                    # under falloff = tube. The core keeps the edge's
+                    # HUE, wears this saturation and burns at full HSV
+                    # value, so the band is the brightest point of the
+                    # effect stated as a COLOUR rather than reached by
+                    # clipping (the owner's own number, 2026-08-25:
+                    # "s = 70.00 w zapisie hsv"). 0.0 is a pure white
+                    # core, 1.0 the hue at full blast; `boost`'s old
+                    # per-channel drive made "how white" a function of
+                    # the edge's own lightness, which no token could
+                    # state — this one states it.
 
 # ---- focus_ring — the keyboard focus ring -------------------------------
 focus_ring.enabled = false
@@ -4740,7 +4751,7 @@ content_pad_x = same_as_parent      # horizontal half of content_pad, split when
 content_pad_y = same_as_parent      # vertical half of content_pad · images 1-10 · sentinel | len (u) · same_as_parent = @panel.content_pad
 corner = @corner.md                 # panel corner radius · images 1,7 ("~8 px at 1440p") · len (u) · @corner.md = 1.2u = 6.5 px
 corner_mode = @corner.mode          # how that radius is cut · images 1,7 · enum: round | chamfer · @corner.mode, the one place this file states its corner language
-border = @stroke.hair               # the resting panel ring · images 1-10, the brief's "thin glowing 1px border" · str · @stroke.hair
+border = @border.edge.width         # the resting panel ring · images 1-10, the brief's "thin glowing 1px border" · str · @border.edge.width -> @stroke.hair by default (2026-08-25: this hop was `@stroke.hair` directly, skipping `border.edge.width` — the token `border_width_edit`'s own doc already claimed this chain ran through, and `elev.panel.edge.width -> @panel.border` is the ONLY reader of this key, so the two theme editor rows agreed with each other and neither moved a panel ring; both resolve to the identical stroke.hair by default, so no picture changes for a theme that never touches BORDER SIZE)
 border_focused = @stroke.regular    # the ring when the panel is the focused container · image 7 · str · @stroke.regular
 min_content_h = @rhythm.row         # the content box a short panel is never squeezed under; the container's degradation ladder (u2 §4.2) starts when the box would fall below it · images 1-10 · len (u) · @rhythm.row = 27.0 px
 title.band_h = @titlebar.h          # height of the title band itself · images 1-10 · len (u) · was 4.6u; retargeted to the shared root, a 3.3 px change

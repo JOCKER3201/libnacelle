@@ -478,6 +478,36 @@ pub(crate) mod tests {
     /// rather than left to whatever moment the suite happens to run at.
     pub(crate) const AT_REST: f64 = 0.0;
 
+    /// BORDER SIZE MOVES EVERY PANEL'S RING, END TO END — the theme
+    /// editor's own row through `set_preview`, through `panel.border`,
+    /// through `elev.panel.edge.width`, to the width `draw_in` actually
+    /// reads. Missing before 2026-08-25: `panel.border` named
+    /// `@stroke.hair` directly, skipping `border.edge.width` — the token
+    /// `border_width_edit`'s own doc already claimed the chain ran
+    /// through, and nothing caught the gap because BOTH resolve to
+    /// `stroke.hair` at every theme's own default, so an untouched
+    /// panel's ring never moved either way. A live preview is the one
+    /// thing that tells the two apart.
+    #[test]
+    fn border_size_moves_every_panel_s_ring_through_the_live_preview() {
+        let _g = crate::theme::preview_test_lock();
+        let before = {
+            let t = crate::theme::resolved();
+            t.px(t.id("elev.panel.edge.width").unwrap())
+        };
+        assert!(crate::theme::set_preview(&[("border.edge.width", "0.90u")]).is_empty());
+        let after = {
+            let t = crate::theme::resolved();
+            t.px(t.id("elev.panel.edge.width").unwrap())
+        };
+        crate::theme::clear_preview();
+        assert!(
+            after > before + 1.0,
+            "BORDER SIZE moved border.edge.width to 0.90u but elev.panel.edge.width \
+             stayed at {before}px ({after}px after) — the chain to `panel.border` broke again"
+        );
+    }
+
     // ------------------------------------------- the no-move proof
     //
     // Shared with `menu.rs` and `tooltip.rs`, whose claim is not about a

@@ -342,10 +342,13 @@ pub fn border_width_edit(scope: Scope, width_u: f32) -> Edit {
 /// picked GLOW got one reach and no say in it.
 ///
 /// THE RANGE IS DECLARED IN THE FILE, not chosen here: `panel_edge.radius`
-/// says `u, 0u .. 4u` (default.theme:1105-1107), so 4u is the wall and 0u
-/// is the master's own `none` sentinel — draw nothing. A caller that hands
-/// this zero is asking for an unlit border by way of the reach, which is a
-/// legal thing to ask and reads on screen exactly like LINE.
+/// says `u, 0u .. 8.76u` (its own doc carries the derivation — the
+/// editor's 4mm calibration of 2026-08-25, raised the same day by the
+/// owner's "o 300% po jednej i drugiej stronie" from the 2.19u it first
+/// landed on), and 0u is the master's own `none` sentinel — draw
+/// nothing. A caller that hands this zero is asking for an unlit border
+/// by way of the reach, which is a legal thing to ask and reads on
+/// screen exactly like NONE.
 ///
 /// WHO WINS. This is written by the editor AFTER [`border_edits`], over
 /// the top of the seed, because a number a person moved outranks a floor
@@ -353,7 +356,7 @@ pub fn border_width_edit(scope: Scope, width_u: f32) -> Edit {
 /// assignment per token, or a file would carry the key twice.
 pub fn glow_reach_edit(scope: Scope, radius_u: f32) -> Edit {
     let Scope::Theme = scope;
-    Edit::new("glow.panel_edge.radius", format!("{:.2}u", radius_u.clamp(0.0, 4.0)))
+    Edit::new("glow.panel_edge.radius", format!("{:.2}u", radius_u.clamp(0.0, 8.76)))
 }
 
 /// How far a background answer's COLOUR travels along the `[elev.*]`
@@ -1819,12 +1822,13 @@ mod tests {
         let e = glow_reach_edit(Scope::Theme, 2.4);
         assert_eq!(e.token, "glow.panel_edge.radius");
         assert_eq!(e.value, "2.40u");
-        // default.theme:1105-1107 declares `u, 0u .. 4u` for this key, and
-        // 0u is its own `none` sentinel — both ends are the FILE's.
+        // The master declares `u, 0u .. 8.76u` for this key (its own doc
+        // carries the 4mm-times-four derivation, 2026-08-25), and 0u is
+        // its own `none` sentinel — both ends are the FILE's.
         assert_eq!(
             glow_reach_edit(Scope::Theme, 12.0).value,
-            "4.00u",
-            "a reach past the master's declared 4u was let through"
+            "8.76u",
+            "a reach past the master's declared 8.76u was let through"
         );
         assert_eq!(glow_reach_edit(Scope::Theme, -1.0).value, "0.00u");
     }

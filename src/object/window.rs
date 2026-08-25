@@ -140,46 +140,41 @@ pub(crate) struct TubeKeys {
     aura_reach: TokenId,
     bands: TokenId,
     cutoff: TokenId,
+    core_sat: TokenId,
 }
 
 /// One class's tube, dressed — the light's shape and the drive on its core.
 pub(crate) struct Tube {
     profile: crate::draw::GlowProfile,
     boost: f32,
+    core_sat: f32,
 }
 
 impl Tube {
     /// The core of the tube, given the colour of the glass.
     ///
-    /// A pixel driven at `boost` times what a display can show is
-    /// CLIPPED, and the clip is the whole effect: the strongest channel
-    /// of a saturated colour reaches 1 first, the others follow as the
-    /// drive rises, and the core goes pale and then white while the light
-    /// around it — never driven — keeps the hue. So there is no "how much
-    /// white" arithmetic here and no number chosen in Rust: the amount of
-    /// white is what clipping the theme's own colour at the theme's own
-    /// drive comes to.
+    /// THE STATED COLOUR, NOT A DRIVEN ONE (2026-08-25, the owner's own
+    /// number: "efekt na samym borderze ma być o wartości s = 70.00 w
+    /// zapisie hsv"). The core keeps the glass's HUE, wears the theme's
+    /// `tube_core_sat` as its HSV saturation, and burns at full HSV
+    /// value — the brightest point of the whole effect, stated as a
+    /// colour rather than reached by clipping. Before this the core was
+    /// the edge multiplied by `boost` and clipped per channel, which
+    /// made "how white" a function of the edge's own lightness: a dim
+    /// theme's core barely paled while a bright one's blew to pure
+    /// white, and no token could say where between the two it landed.
+    /// Saturation is that word. `boost` still rides the [`Tube`] — its
+    /// token is declared, read and clamped exactly as before — but the
+    /// core no longer consumes it; see `glow.panel_edge.boost`'s own
+    /// doc for its standing.
     ///
-    /// THE CLIP IS TAKEN HERE, not left to a display, and the difference
-    /// matters enough to say: `.min(1.0)` per channel means the picture
-    /// is the same on every target this toolkit can be drawn to, and no
-    /// stage downstream has to be taught what a colour above 1 means. It
-    /// also means an HDR swapchain gets the clipped colour like everybody
-    /// else — a tube that stays bright on R16F needs this clamp lifted
-    /// AND a `grade()` that can take a sample above 1, and that second
-    /// half lives in the renderer's repository. The master says so at
-    /// `glow.panel_edge.boost`; nothing here claims otherwise.
-    ///
-    /// Alpha is the edge's, untouched. A drive is on the LIGHT; coverage
-    /// is a different question and the tube covers exactly what the
-    /// border covered.
+    /// Alpha is the edge's, untouched. The saturation is on the LIGHT;
+    /// coverage is a different question and the tube covers exactly
+    /// what the border covered.
     fn core(&self, edge: Color) -> Color {
-        Color {
-            r: (edge.r * self.boost).min(1.0),
-            g: (edge.g * self.boost).min(1.0),
-            b: (edge.b * self.boost).min(1.0),
-            a: edge.a,
-        }
+        let (h, _, _) = super::color_picker::rgb_to_hsv(edge.r, edge.g, edge.b);
+        let (r, g, b) = super::color_picker::hsv_to_rgb(h, self.core_sat, 1.0);
+        Color { r, g, b, a: edge.a }
     }
 }
 
@@ -219,6 +214,7 @@ pub(crate) fn tube_dress(
             cutoff: t.px(k.cutoff).clamp(0.0, 1.0),
         },
         boost: t.px(k.boost).max(1.0),
+        core_sat: t.px(k.core_sat).clamp(0.0, 1.0),
     })
 }
 
@@ -338,6 +334,7 @@ pub(crate) fn panel_edge_glow(
         aura_reach: theme::id("glow.panel_edge.tube_aura_reach").unwrap_or(TokenId::MISSING),
         bands: theme::id("glow.panel_edge.tube_bands").unwrap_or(TokenId::MISSING),
         cutoff: theme::id("glow.panel_edge.tube_cutoff").unwrap_or(TokenId::MISSING),
+        core_sat: theme::id("glow.panel_edge.tube_core_sat").unwrap_or(TokenId::MISSING),
     });
     let profile = match tube_dress(t, keys, &TUBE_WORD) {
         // The core FIRST, then the light over it: the burned stroke is
@@ -363,14 +360,32 @@ pub(crate) fn panel_edge_glow(
         FontSystem::mask_soft_uv(),
         profile,
     );
-    // A tube lights the frame it edges, not only the dark outside it: NEON
-    // throws the same profile inward, over the body just drawn, so the
-    // border glows on BOTH sides. A halo is a one-way bleed and asks for no
-    // such thing — the gate is the profile, which is the theme's own
-    // `glow.panel_edge.falloff = tube` and nothing decided in Rust.
-    if !profile.is_halo() {
+    // THE EFFECT HOLDS BOTH FACES OF THE BAND, AT THE SAME DISTANCE
+    // (2026-08-25, the owner's word: "efekt po obu stronach ma odstawać
+    // od borderu na taką samą odległość zawsze, niezależnie od tego
+    // jakiej grubości jest border"). The outward light above grows off
+    // the border's OUTER contour; this one grows off its INNER contour —
+    // the rect inset by the border's own width, wearing the same corners
+    // (`ring_verts`' equal-rounding rule) — so a border twice as thick
+    // moves both lights apart with its walls and neither light changes
+    // its own width. Until today the inward face grew off the OUTER
+    // contour too, spending its first `width` px under the opaque band
+    // where the additive light could not be seen — which is exactly why
+    // a thick border read as a glow on one side only.
+    //
+    // BOTH effects wear both faces now, halo and tube alike: the old
+    // `!profile.is_halo()` gate predates the border/effect split — a
+    // GLOW border is the same constant band with a softer light, not a
+    // different object with fewer sides.
+    let r_in = Rect::new(
+        r.x + width,
+        r.y + width,
+        (r.w - 2.0 * width).max(0.0),
+        (r.h - 2.0 * width).max(0.0),
+    );
+    if r_in.w > 0.0 && r_in.h > 0.0 {
         dl.glow_ring_inward_with(
-            r,
+            r_in,
             c,
             segments,
             radius,
@@ -876,35 +891,67 @@ mod tests {
         dl.glow_ring(r, c, segments, radius, edge.alpha(alpha), FontSystem::mask_soft_uv());
     }
 
-    /// THE RENAME MOVED NO PIXEL.
+    /// THE RENAME MOVED NO PIXEL OF THE OUTWARD FACE — and since the
+    /// border/effect split (2026-08-25) the halo carries an INWARD face
+    /// too, which this proof holds to its own two lines instead.
     ///
     /// The owner's condition on calling the old kind GLOW was that a
     /// theme already wearing it look exactly the same afterwards. So the
     /// theme that WAS the old NEON is drawn twice — once by the
     /// transcript of the code that drew it, once by the code that now
-    /// offers two profiles — and the two lists are compared command for
-    /// command and vertex for vertex.
+    /// offers two profiles — and the transcript's list must be exactly
+    /// the PREFIX of today's: same commands, same vertices, in the same
+    /// order. What follows that prefix is the split's own addition — an
+    /// effect wears both walls of the band now, halo and tube alike —
+    /// and it is held to being (a) present and (b) strictly inside the
+    /// band's inner contour, never touching the outward picture.
     ///
-    /// The master's `boost` moved from 1.0 to 2.6 on the same day, which
-    /// is exactly the kind of change this proof exists to catch: a drive
-    /// read on the halo road would have burned the border of every theme
-    /// that had ever turned the glow on. It is read only under `tube`,
-    /// and this is where that is checked.
+    /// The master's `boost` moved from 1.0 to 2.6 on the rename's own
+    /// day, which is exactly the kind of change the prefix half exists
+    /// to catch: a drive read on the halo road would have burned the
+    /// border of every theme that had ever turned the glow on. It is
+    /// read only under `tube`, and this is where that is checked.
     #[test]
     fn renaming_the_halo_moved_no_pixel() {
         let t = a_gauss_theme();
         let edge = Color { r: 0.35, g: 0.62, b: 0.94, a: 1.0 };
         let c = [Corner::round(9.0); 4];
+        let r = box_();
         let mut was = DrawList::recording();
-        the_halos_own_transcript(&mut was, &t, box_(), &c, 6, edge, AT_REST);
+        the_halos_own_transcript(&mut was, &t, r, &c, 6, edge, AT_REST);
         assert!(
             was.cmds().iter().any(|c| matches!(c, DrawCmd::GlowRing { .. })),
             "the halo theme drew no glow, so this proves nothing: {:?}",
             was.cmds()
         );
         let mut now = DrawList::recording();
-        panel_edge_glow(&mut now, &t, box_(), &c, 6, edge, A_BORDER, AT_REST);
-        same_picture(&was, &now);
+        panel_edge_glow(&mut now, &t, r, &c, 6, edge, A_BORDER, AT_REST);
+        // The register is unchanged whole: the inward face is the same
+        // intent's second wall, not a second glow to hash.
+        let dump = |dl: &DrawList| {
+            dl.cmds().iter().map(|c| c.to_string()).collect::<Vec<_>>().join("\n")
+        };
+        assert_eq!(dump(&was), dump(&now));
+        // The outward face, vertex for vertex, as the prefix.
+        let verts = |dl: &DrawList| {
+            dl.verts.iter().map(|v| (v.pos, v.uv, v.color)).collect::<Vec<_>>()
+        };
+        let (was_v, now_v) = (verts(&was), verts(&now));
+        assert!(
+            now_v.len() > was_v.len(),
+            "the halo grew no inward face — the border/effect split lost a wall"
+        );
+        assert_eq!(was_v[..], now_v[..was_v.len()], "the outward face moved");
+        // And the addition stays behind the band's inner wall.
+        for (pos, _, _) in &now_v[was_v.len()..] {
+            assert!(
+                pos[0] >= r.x + A_BORDER - 1e-3
+                    && pos[0] <= r.right() - A_BORDER + 1e-3
+                    && pos[1] >= r.y + A_BORDER - 1e-3
+                    && pos[1] <= r.bottom() - A_BORDER + 1e-3,
+                "the inward face leaked past the band's inner contour: {pos:?}"
+            );
+        }
     }
 
     /// THE OWNER'S SAVED THEME NOW OPENS ON THE TUBE, NOT THE HALO.
@@ -992,6 +1039,7 @@ mod tests {
             aura_reach: id("glow.panel_edge.tube_aura_reach"),
             bands: id("glow.panel_edge.tube_bands"),
             cutoff: id("glow.panel_edge.tube_cutoff"),
+            core_sat: id("glow.panel_edge.tube_core_sat"),
         };
         let t = a_tube_theme();
         let tube = tube_dress(&t, &keys, &WORD)
@@ -1024,13 +1072,16 @@ mod tests {
             "the master cuts the light into {} band(s), so its decay reaches nothing",
             tube.profile.bands
         );
-        // The sixth claim: the master spends less than the whole of
-        // `radius` on visible light — a cutoff of 1.0 is the identity
-        // (no cutoff), and the master asked for a delicate glow, not
-        // the full reach lit end to end.
+        // The sixth claim: the master spends the WHOLE of `radius` —
+        // cutoff at its 1.0 identity — because the ramp itself is
+        // exactly zero at the reach since 2026-08-25 (`tube_decay`'s
+        // own doc carries the rewrite); an early cut would shorten a
+        // gradient that already ends, which is the sketch the owner
+        // rejected. The range check still refuses a NaN or a value the
+        // clamp in `tube_dress` should have caught.
         assert!(
-            (0.0..1.0).contains(&tube.profile.cutoff),
-            "the master's cutoff is {}, which spends the whole of radius",
+            (0.0..=1.0).contains(&tube.profile.cutoff) && tube.profile.cutoff == 1.0,
+            "the master's cutoff is {}, not the identity the terminating ramp calls for",
             tube.profile.cutoff
         );
         assert!(!tube.profile.is_halo(), "the master's tube {:?} is a halo", tube.profile);
@@ -1065,6 +1116,7 @@ mod tests {
             aura_reach: id("glow.panel_edge.tube_aura_reach"),
             bands: id("glow.panel_edge.tube_bands"),
             cutoff: id("glow.panel_edge.tube_cutoff"),
+            core_sat: id("glow.panel_edge.tube_core_sat"),
         };
         // One key overridden at a time, so a reader that answered the
         // right number for the wrong key is caught too.
@@ -1095,7 +1147,10 @@ mod tests {
             ("tube_bands", |t| t.profile.bands as f32, master.profile.bands as f32, [
                 1.0, 3.0, 9.0,
             ]),
-            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.55, 1.0]),
+            // 1.0 is out of the probe set since the master says it
+            // itself (the identity, 2026-08-25); 0.85 carries the
+            // top-end case instead.
+            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.55, 0.85]),
         ];
         for (key, read, mine, asked) in seen {
             for want in asked {
