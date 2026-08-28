@@ -12,10 +12,10 @@
 //! rather than trusting itself.
 
 use super::def::{BoardDef, BoardId, LayoutDef, ResOverride, ScreenKey};
-use super::instance::{InstanceId, InstanceList};
+use super::instance::{Instance, InstanceId, InstanceList};
 use super::layaut;
 use crate::assets::AssetRoots;
-use crate::base::{LayoutMode, PanelSpec};
+use crate::base::{LayoutMode, PanelSpec, OFF_SPEC};
 use std::path::{Path, PathBuf};
 
 /// The suffix the pre-migration copy of a layaut keeps. Not a `.layaut`
@@ -262,21 +262,36 @@ impl LayautStore {
     /// SAVE while on a board: that board's instances at the rectangles
     /// the grid editor gave them. Instances the caller did not name are
     /// no longer on the board, and go.
+    ///
+    /// `placements` carries the WHOLE instance, not just its id and
+    /// rectangle (2026-08-28's fix): one dragged out of ADD WIDGET this
+    /// same editing session has no entry in `def.instances` yet — this
+    /// function used to reach straight for `set_rect`/`set_board`, which
+    /// answer `false` and do nothing for an id that is not there, so a
+    /// freshly placed widget was silently dropped on every board but the
+    /// one `Screen::edited_spec` already handled this correctly for.
+    /// `Instance` is `Copy`, so restoring one costs nothing this
+    /// function did not already have on hand.
     pub fn set_board(
         &self,
         name: &str,
         k: BoardId,
-        rects: &[(InstanceId, PanelSpec)],
+        placements: &[Instance],
     ) -> std::io::Result<()> {
         let mut def = self.read_def(name);
         for id in board_ids(&def.instances, k) {
-            if !rects.iter().any(|(i, _)| *i == id) {
+            if !placements.iter().any(|p| p.id == id) {
                 def.instances.remove(id);
             }
         }
-        for (id, spec) in rects {
-            def.instances.set_board(*id, k);
-            def.instances.set_rect(*id, Some(*spec));
+        for inst in placements {
+            let rect = Some(inst.rect.unwrap_or(OFF_SPEC));
+            if def.instances.get(inst.id).is_some() {
+                def.instances.set_rect(inst.id, rect);
+                def.instances.set_board(inst.id, k);
+            } else {
+                def.instances.restore(Instance { rect, board: k, ..*inst });
+            }
         }
         let mut boards = def.boards.clone();
         boards.retain(|(i, _)| *i != k);
@@ -392,4 +407,135 @@ fn list_stems(dir: &Path, ext: &str) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::base::{Panel, WidgetCategory, WidgetDef};
+
+    /// Two panels a `.layaut` round trip can actually name. The registry
+    /// ([`crate::base::set_registry`]) is a process-wide "first call
+    /// wins" singleton — some OTHER test module's fixture may already
+    /// have installed one by the time this one runs, in either order,
+    /// under the default parallel harness. Asking for two names of its
+    /// own and then reading back whatever `Panel::all()` actually holds,
+    /// rather than trusting its own call won the race, is what lets this
+    /// module's tests use REAL, name-resolving panels without caring
+    /// which fixture got there first.
+    fn two_real_panels() -> (Panel, Panel) {
+        let def = |n: &str, order: f32| WidgetDef {
+            name: n.to_string(),
+            label: n.to_uppercase(),
+            ref_h_vh: 10.0,
+            min_h_vh: 5.0,
+            category: WidgetCategory::Board,
+            slot: Default::default(),
+            order,
+            weight: None,
+            anchor: Default::default(),
+            essential: false,
+        };
+        crate::base::set_registry(vec![
+            def("nacelle-store-test-a", 0.0),
+            def("nacelle-store-test-b", 1.0),
+        ]);
+        let all = Panel::all();
+        assert!(
+            all.len() >= 2,
+            "no test in this binary has registered even two widgets"
+        );
+        (all[0], all[1])
+    }
+
+    /// A one-off `LayautStore` writing into its own temp directory, torn
+    /// down when the test ends: `set_board` is real filesystem I/O, not
+    /// a pure function, so there is no way to check it that does not
+    /// actually write and read a `.layaut` back.
+    fn store_in_temp_dir(tag: &str) -> (LayautStore, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("nacelle-layaut-store-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("layauts")).unwrap();
+        (LayautStore::new(AssetRoots::new(vec![dir.clone()], dir.clone())), dir)
+    }
+
+    /// The exact regression (2026-08-28): a widget dragged out of ADD
+    /// WIDGET and dropped on any board but home has an id `set_board`'s
+    /// own freshly-`read_def`'d file has never heard of. `set_rect`/
+    /// `set_board` on `InstanceList` both answer `false` and do nothing
+    /// for an id that is not there — which is exactly what used to
+    /// happen here, so a widget that LOOKED placed in the editor, saved
+    /// without error, and vanished from the file as though it had never
+    /// been added. The board's own OTHER, pre-existing instance is
+    /// included too, so this also checks the fix did not disturb the
+    /// ordinary "move an existing placement" path it sits beside.
+    #[test]
+    fn set_board_keeps_a_placement_the_file_never_named_before() {
+        let (widget, _) = two_real_panels();
+        let (store, dir) = store_in_temp_dir("fresh-placement");
+        let board = (1, 0);
+
+        // Minted the same way the grid editor mints one: a fresh,
+        // independent `InstanceList` that knows nothing of the file —
+        // "fresh" has never been saved before, so `set_board`'s own
+        // `read_def` starts from nothing on this board at all.
+        let mut minted = InstanceList::new();
+        let new_id = minted.add(
+            widget,
+            board,
+            Some(PanelSpec { x: 12.0, y: 34.0, w: 20.0, h: 15.0 }),
+        );
+        let placement = *minted.get(new_id).unwrap();
+
+        store.set_board("fresh", board, &[placement]).unwrap();
+
+        let def = store.load("fresh").expect("set_board did not leave a loadable layaut");
+        let saved = def
+            .instances
+            .get(new_id)
+            .expect("a placement the file never named before was dropped");
+        assert_eq!(saved.widget, widget);
+        assert_eq!(saved.board, board);
+        let rect = saved.rect.expect("the fresh placement's rectangle was dropped");
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (12.0, 34.0, 20.0, 15.0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of `set_board`'s own contract, unchanged by the
+    /// fix above: an instance the caller no longer names is gone. Also
+    /// exercises the ORDINARY path the fix sits beside — the second
+    /// call's `keep` placement already has a file entry from the first,
+    /// so it goes through `set_rect`/`set_board` rather than `restore`.
+    #[test]
+    fn set_board_drops_an_instance_the_caller_stopped_naming() {
+        let (widget_a, widget_b) = two_real_panels();
+        let (store, dir) = store_in_temp_dir("dropped-placement");
+        let board = (1, 0);
+
+        // Real, on-screen rectangles, not `OFF_SPEC`: that sentinel
+        // means HIDDEN ([`crate::layout::Instance::hidden`]), and a
+        // hidden instance is exactly what `serialize_boards` leaves out
+        // of the board section it writes — this test needs both
+        // instances to actually round-trip, not merely survive in
+        // memory.
+        let mut minted = InstanceList::new();
+        let keep = minted.add(widget_a, board, Some(PanelSpec { x: 0.0, y: 0.0, w: 20.0, h: 20.0 }));
+        let drop = minted.add(widget_b, board, Some(PanelSpec { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }));
+
+        // First save: both on the board.
+        let both = [*minted.get(keep).unwrap(), *minted.get(drop).unwrap()];
+        store.set_board("shrinking", board, &both).unwrap();
+        let def = store.load("shrinking").unwrap();
+        assert!(def.instances.get(keep).is_some(), "the first save lost `keep`");
+        assert!(def.instances.get(drop).is_some(), "the first save lost `drop`");
+
+        // Second save: only `keep` is named this time.
+        store.set_board("shrinking", board, &[*minted.get(keep).unwrap()]).unwrap();
+        let def = store.load("shrinking").unwrap();
+        assert!(def.instances.get(keep).is_some(), "the kept instance was lost too");
+        assert!(def.instances.get(drop).is_none(), "the dropped instance is still in the file");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
