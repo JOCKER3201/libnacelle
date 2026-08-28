@@ -1150,34 +1150,86 @@ fn lerp(a: Color, b: Color, u: f32) -> Color {
 /// Sutherland–Hodgman against one gradient-space bound. `t` is affine in
 /// position, so interpolating the crossing by `t` is exact: both bands
 /// sharing the boundary compute the identical point and the seam cannot
-/// crack. Returns the vertex count written into `out`.
-fn clip_t(
-    input: &[([f32; 2], f32)],
-    bound: f32,
-    keep_ge: bool,
-    out: &mut [([f32; 2], f32); 8],
-) -> usize {
+/// crack. `out` is cleared and filled with the clipped ring — a `Vec`
+/// and not a fixed buffer (2026-08-28) because [`rect_grad_shape`] hands
+/// this the FULL boundary of a rounded rect, up to `4 · (segments + 1)`
+/// points, and the plain four-corner ring this fed exclusively until
+/// then is simply the `segments = 0` case of the same shape.
+fn clip_t(input: &[([f32; 2], f32)], bound: f32, keep_ge: bool, out: &mut Vec<([f32; 2], f32)>) {
+    out.clear();
     let inside = |t: f32| if keep_ge { t >= bound } else { t <= bound };
-    let mut m = 0;
     let n = input.len();
     for i in 0..n {
         let (p0, t0) = input[i];
         let (p1, t1) = input[(i + 1) % n];
         let (in0, in1) = (inside(t0), inside(t1));
         if in0 {
-            out[m] = (p0, t0);
-            m += 1;
+            out.push((p0, t0));
         }
         if in0 != in1 {
             let u = (bound - t0) / (t1 - t0);
-            out[m] = (
+            out.push((
                 [p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u],
                 bound,
-            );
-            m += 1;
+            ));
         }
     }
-    m
+}
+
+/// Sutherland–Hodgman against a whole convex polygon rather than
+/// [`clip_t`]'s single gradient-space bound — [`checker_shape`](DrawList::checker_shape)'s
+/// own need (2026-08-28): a plain axis-aligned tile clipped against
+/// [`ring_points`]' rounded boundary, so an alpha preview's squares stop
+/// at the same curve the fill and the border already agree on instead of
+/// the tile's own square corner. `clip` must be wound the way
+/// [`ring_points`] always winds one (TL, TR, BR, BL, in screen space) —
+/// `side` below is signed for exactly that winding. `scratch` is the
+/// buffer each edge's pass swaps its result into; `out` starts as a copy
+/// of `subject` and ends holding the final polygon, empty if the two
+/// shapes do not overlap.
+fn clip_convex(subject: &[[f32; 2]], clip: &[[f32; 2]], out: &mut Vec<[f32; 2]>, scratch: &mut Vec<[f32; 2]>) {
+    out.clear();
+    out.extend_from_slice(subject);
+    let side = |a: [f32; 2], b: [f32; 2], p: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    let n = clip.len();
+    for i in 0..n {
+        if out.is_empty() {
+            return;
+        }
+        let a = clip[i];
+        let b = clip[(i + 1) % n];
+        scratch.clear();
+        let m = out.len();
+        for j in 0..m {
+            let cur = out[j];
+            let prev = out[(j + m - 1) % m];
+            let (cur_in, prev_in) = (side(a, b, cur) >= 0.0, side(a, b, prev) >= 0.0);
+            if cur_in {
+                if !prev_in {
+                    scratch.push(segment_crossing(prev, cur, a, b));
+                }
+                scratch.push(cur);
+            } else if prev_in {
+                scratch.push(segment_crossing(prev, cur, a, b));
+            }
+        }
+        std::mem::swap(out, scratch);
+    }
+}
+
+/// Where segment `p1`–`p2` crosses line `a`–`b` — [`clip_convex`]'s own
+/// helper, called only when the two endpoints it is given already sit on
+/// opposite sides of `a`–`b`, so the lines are never parallel in practice
+/// (the `denom` guard is a divide-by-zero backstop, not a real case).
+fn segment_crossing(p1: [f32; 2], p2: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let (x1, y1, x2, y2) = (p1[0], p1[1], p2[0], p2[1]);
+    let (x3, y3, x4, y4) = (a[0], a[1], b[0], b[1]);
+    let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if denom.abs() < 1e-9 {
+        return p2;
+    }
+    let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+    [x1 + t * (x2 - x1), y1 + t * (y2 - y1)]
 }
 
 /// One contiguous run of vertices sampling one texture: the glyph
@@ -1290,6 +1342,18 @@ pub enum DrawCmd {
     },
     GlassFill { r: [f32; 4], corners: [Corner; 4], depth: f32, tint: Color },
     RectGrad { r: [f32; 4], stops: Vec<(f32, Color)>, angle: f32 },
+    /// [`DrawList::rect_grad_shape`] — [`RectGrad`](DrawCmd::RectGrad)
+    /// under a corner treatment: a picker slider's own track is a
+    /// gradient AND a rounded rect at once, which is neither
+    /// [`RectGrad`](DrawCmd::RectGrad) (square by construction) nor
+    /// [`Shape`](DrawCmd::Shape) (one flat colour by construction).
+    RectGradShape {
+        r: [f32; 4],
+        corners: [Corner; 4],
+        segments: u8,
+        stops: Vec<(f32, Color)>,
+        angle: f32,
+    },
     FanC { centre: [f32; 2], c_centre: Color, rim: Vec<([f32; 2], Color)> },
     Image { r: [f32; 4], id: ImageId, tint: Color },
     ImageUv { r: [f32; 4], uv: [[f32; 2]; 4], id: ImageId, tint: Color },
@@ -1627,6 +1691,20 @@ impl fmt::Display for DrawCmd {
                 }
                 Ok(())
             }
+            DrawCmd::RectGradShape { r, corners: c, segments, stops, angle } => {
+                f.write_str("rect_grad_shape at")?;
+                nums(f, r, PX)?;
+                corners(f, c)?;
+                write!(f, " segments {segments}")?;
+                field(f, "angle", *angle, FINE)?;
+                write!(f, " stops {}", stops.len())?;
+                for (t, c) in stops {
+                    f.write_str(" ")?;
+                    num(f, *t, FINE)?;
+                    rgba(f, *c)?;
+                }
+                Ok(())
+            }
             DrawCmd::FanC { centre, c_centre, rim } => {
                 f.write_str("fan_c centre")?;
                 nums(f, centre, PX)?;
@@ -1804,6 +1882,28 @@ pub struct DrawList {
     /// mem::take so a ring costs no allocation after the first frame.
     scratch_a: Vec<[f32; 2]>,
     scratch_b: Vec<[f32; 2]>,
+    /// [`rect_grad_boundary`]'s own three, the same mem::take reuse as
+    /// `scratch_a`/`scratch_b` above but carrying each point's own
+    /// projection onto the gradient axis beside it — `scratch_a`'s own
+    /// `[f32; 2]` has nowhere to keep that number, and a banded gradient
+    /// needs THREE such rings alive at once (the source ring plus
+    /// [`clip_t`]'s own ping-pong pair), one more than the two plain
+    /// point buffers have to lend.
+    scratch_ring: Vec<([f32; 2], f32)>,
+    scratch_clip_a: Vec<([f32; 2], f32)>,
+    scratch_clip_b: Vec<([f32; 2], f32)>,
+    /// The raw per-point projection [`rect_grad_boundary`] scans for its
+    /// own lo/hi before `scratch_ring` above can be built — a fourth
+    /// borrowed buffer rather than a fresh `Vec` for the same reason as
+    /// its three siblings.
+    scratch_proj: Vec<f32>,
+    /// [`checker_shape`](Self::checker_shape)'s own ping-pong buffer —
+    /// [`clip_convex`] needs one working buffer besides its `out`
+    /// parameter (`scratch_b`, borrowed for the tile's own clipped
+    /// polygon) while `scratch_a` holds the rounded boundary itself, so
+    /// a checkerboard under a rounded swatch also costs no allocation
+    /// past its first frame.
+    scratch_c: Vec<[f32; 2]>,
     /// The command register, absent unless armed. `None` is a null
     /// pointer's worth of state and no allocation at all: an unarmed
     /// frame pays one branch per drawing call and never builds a
@@ -1824,6 +1924,11 @@ impl DrawList {
             clips: Vec::new(),
             scratch_a: Vec::new(),
             scratch_b: Vec::new(),
+            scratch_ring: Vec::new(),
+            scratch_clip_a: Vec::new(),
+            scratch_clip_b: Vec::new(),
+            scratch_proj: Vec::new(),
+            scratch_c: Vec::new(),
             cmds: cmds_armed().then(Vec::new),
         }
     }
@@ -3773,29 +3878,126 @@ impl DrawList {
             stops: stops.to_vec(),
             angle,
         });
-        if r.w <= 0.0 || r.h <= 0.0 || stops.is_empty() {
+        if r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
-        if stops.len() == 1 {
-            self.rect_verts(r.x, r.y, r.w, r.h, stops[0].1);
-            return;
-        }
-        // Corners tl,tr,br,bl with their normalised projection onto the
-        // axis. Normalising by the observed min/max makes the extreme
-        // corners land on t = 0 and t = 1 exactly, at any angle.
-        let (sin_a, cos_a) = angle.sin_cos();
         let p = [
             [r.x, r.y],
             [r.x + r.w, r.y],
             [r.x + r.w, r.y + r.h],
             [r.x, r.y + r.h],
         ];
-        let proj = [
-            p[0][0] * cos_a + p[0][1] * sin_a,
-            p[1][0] * cos_a + p[1][1] * sin_a,
-            p[2][0] * cos_a + p[2][1] * sin_a,
-            p[3][0] * cos_a + p[3][1] * sin_a,
-        ];
+        self.rect_grad_boundary(&p, stops, angle);
+    }
+
+    /// A tiled two-colour checkerboard, clipped to a rounded/chamfered
+    /// boundary rather than its own bounding rectangle — an alpha
+    /// preview under a rounded swatch (2026-08-28): a plain rectangular
+    /// clip left the corner tiles' square corners showing past the
+    /// rounded fill drawn over them, which is what
+    /// [`ring_points`]/[`clip_convex`] this walks are for. Each tile is
+    /// clipped to the SAME boundary [`ring_fill`](Self::ring_fill) and
+    /// [`ring`](Self::ring) draw around the shape it sits under, so the
+    /// three can never disagree about where the corner really is.
+    pub fn checker_shape(&mut self, r: Rect, corners: &[Corner; 4], segments: u8, tile: f32, a: Color, b: Color) {
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        let tile = tile.max(1.0);
+        let mut ring = std::mem::take(&mut self.scratch_a);
+        ring_points(r, corners, segments, &mut ring);
+        if ring.len() < 3 {
+            self.scratch_a = ring;
+            return;
+        }
+        let mut poly = std::mem::take(&mut self.scratch_b);
+        let mut ping = std::mem::take(&mut self.scratch_c);
+        let (nx, ny) = ((r.w / tile).ceil() as usize, (r.h / tile).ceil() as usize);
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let (x0, y0) = (r.x + ix as f32 * tile, r.y + iy as f32 * tile);
+                let (x1, y1) = ((x0 + tile).min(r.x + r.w), (y0 + tile).min(r.y + r.h));
+                let quad = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+                clip_convex(&quad, &ring, &mut poly, &mut ping);
+                let n = poly.len();
+                if n < 3 {
+                    continue;
+                }
+                let c = if (ix + iy) % 2 == 0 { a } else { b }.to_array();
+                for i in 1..n - 1 {
+                    self.push_tri_c(None, [poly[0], poly[i], poly[i + 1]], [c, c, c]);
+                }
+            }
+        }
+        self.scratch_a = ring;
+        self.scratch_b = poly;
+        self.scratch_c = ping;
+    }
+
+    /// [`rect_grad`](Self::rect_grad) under a corner treatment — a picker
+    /// slider's own track, which is a gradient AND a rounded rect at
+    /// once (2026-08-28): neither [`rect_grad`](Self::rect_grad) (square
+    /// by construction) nor [`ring_fill`](Self::ring_fill) (one flat
+    /// colour by construction) draws that alone. The boundary is
+    /// [`ring_points`]' own — the SAME corner geometry [`ring`](Self::ring)
+    /// draws around this shape's own frame, so the fill's rounding and
+    /// the border's rounding can never disagree — walked by the SAME
+    /// banding [`rect_grad`](Self::rect_grad) uses, which is exactly why
+    /// [`clip_t`] takes a `Vec` and not a four-slot buffer: the ring this
+    /// hands it can be `4 · (segments + 1)` points long, not four.
+    pub fn rect_grad_shape(
+        &mut self,
+        r: Rect,
+        stops: &[(f32, Color)],
+        angle: f32,
+        corners: &[Corner; 4],
+        segments: u8,
+    ) {
+        self.cmd(|| DrawCmd::RectGradShape {
+            r: [r.x, r.y, r.w, r.h],
+            corners: *corners,
+            segments,
+            stops: stops.to_vec(),
+            angle,
+        });
+        if r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        let mut pts = std::mem::take(&mut self.scratch_a);
+        ring_points(r, corners, segments, &mut pts);
+        self.rect_grad_boundary(&pts, stops, angle);
+        self.scratch_a = pts;
+    }
+
+    /// The shared core of [`rect_grad`](Self::rect_grad) and
+    /// [`rect_grad_shape`](Self::rect_grad_shape): `pts` is the filled
+    /// shape's own boundary, a simple convex ring in EITHER the plain
+    /// four corners or [`ring_points`]' rounded/chamfered ones — the
+    /// banding math below reads only "a ring of points, each with its
+    /// own projection", and does not know or care which.
+    fn rect_grad_boundary(&mut self, pts: &[[f32; 2]], stops: &[(f32, Color)], angle: f32) {
+        if pts.len() < 3 || stops.is_empty() {
+            return;
+        }
+        if stops.len() == 1 {
+            let n = pts.len();
+            let (cx, cy) = pts.iter().fold((0.0, 0.0), |(sx, sy), p| (sx + p[0], sy + p[1]));
+            let centre = [cx / n as f32, cy / n as f32];
+            let c = stops[0].1.to_array();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                self.push_tri_c(None, [centre, pts[i], pts[j]], [c, c, c]);
+            }
+            return;
+        }
+        // Every point's normalised projection onto the axis. Normalising
+        // by the observed min/max makes the extreme points land on
+        // t = 0 and t = 1 exactly, at any angle — [`rect_grad`](Self::rect_grad)'s
+        // own note, unchanged by there being four points or forty.
+        let (sin_a, cos_a) = angle.sin_cos();
+        let mut proj = std::mem::take(&mut self.scratch_proj);
+        proj.clear();
+        proj.extend(pts.iter().map(|p| p[0] * cos_a + p[1] * sin_a));
         let (mut lo, mut hi) = (proj[0], proj[0]);
         for &v in &proj[1..] {
             lo = lo.min(v);
@@ -3804,36 +4006,50 @@ impl DrawList {
         let span = (hi - lo).max(1e-6);
         let s0 = stops[0].0.clamp(0.0, 1.0);
         let s_last = stops[stops.len() - 1].0.clamp(0.0, 1.0);
-        if stops.len() == 2 && s0 == 0.0 && s_last == 1.0 {
+        // The one-quad shortcut is a SQUARE shape's own free lunch — a
+        // rounded boundary has more than four points to begin with, so
+        // there is no quad to push and the general bands below are
+        // exact for it regardless (a single band from 0 to 1 when there
+        // are only the two stops this shortcut would otherwise catch).
+        if pts.len() == 4 && stops.len() == 2 && s0 == 0.0 && s_last == 1.0 {
             let t = |i: usize| (proj[i] - lo) / span;
             let c = |i: usize| lerp(stops[0].1, stops[1].1, t(i)).to_array();
             let (u, v) = FontSystem::white_uv();
-            self.push_quad4(None, p, [[u, v]; 4], [c(0), c(1), c(2), c(3)]);
+            let p4 = [pts[0], pts[1], pts[2], pts[3]];
+            self.push_quad4(None, p4, [[u, v]; 4], [c(0), c(1), c(2), c(3)]);
+            self.scratch_proj = proj;
             return;
         }
         // Band edges: 0, every stop, 1 — the flat caps fall out as bands
         // between two equal colours, zero-width bands are skipped. Within a
-        // band the stop function is affine by construction.
-        let corners: [([f32; 2], f32); 4] = [
-            (p[0], (proj[0] - lo) / span),
-            (p[1], (proj[1] - lo) / span),
-            (p[2], (proj[2] - lo) / span),
-            (p[3], (proj[3] - lo) / span),
-        ];
-        let band = |a: (f32, Color), b: (f32, Color), list: &mut Self| {
+        // band the stop function is affine by construction. The three
+        // buffers this needs (the projected ring, `clip_t`'s own
+        // ping-pong pair) are `mem::take`n from `self`, not fresh `Vec`s
+        // — `an_unarmed_frame_allocates_nothing_and_an_armed_one_does`
+        // pins the promise that a multi-stop gradient, drawn every frame
+        // at the same size, allocates only on the first one.
+        let mut ring = std::mem::take(&mut self.scratch_ring);
+        ring.clear();
+        ring.extend(pts.iter().zip(proj.iter()).map(|(&p, &t)| (p, (t - lo) / span)));
+        self.scratch_proj = proj;
+        let mut buf1 = std::mem::take(&mut self.scratch_clip_a);
+        let mut buf2 = std::mem::take(&mut self.scratch_clip_b);
+        let band = |a: (f32, Color),
+                    b: (f32, Color),
+                    list: &mut Self,
+                    buf1: &mut Vec<([f32; 2], f32)>,
+                    buf2: &mut Vec<([f32; 2], f32)>| {
             if b.0 - a.0 <= 1e-6 {
                 return;
             }
-            let mut buf1 = [([0.0f32; 2], 0.0f32); 8];
-            let mut buf2 = [([0.0f32; 2], 0.0f32); 8];
-            let n1 = clip_t(&corners, a.0, true, &mut buf1);
-            let n2 = clip_t(&buf1[..n1], b.0, false, &mut buf2);
-            if n2 < 3 {
+            clip_t(&ring, a.0, true, buf1);
+            clip_t(buf1, b.0, false, buf2);
+            if buf2.len() < 3 {
                 return;
             }
             let colour = |t: f32| lerp(a.1, b.1, (t - a.0) / (b.0 - a.0)).to_array();
             let (v0, t0) = buf2[0];
-            for i in 1..n2 - 1 {
+            for i in 1..buf2.len() - 1 {
                 let (v1, t1) = buf2[i];
                 let (v2, t2) = buf2[i + 1];
                 list.push_tri_c(None, [v0, v1, v2], [colour(t0), colour(t1), colour(t2)]);
@@ -3843,10 +4059,13 @@ impl DrawList {
         let mut running = 0.0f32;
         for &(pos, col) in stops {
             running = running.max(pos.clamp(0.0, 1.0));
-            band(prev, (running, col), self);
+            band(prev, (running, col), self, &mut buf1, &mut buf2);
             prev = (running, col);
         }
-        band(prev, (1.0, prev.1), self);
+        band(prev, (1.0, prev.1), self, &mut buf1, &mut buf2);
+        self.scratch_ring = ring;
+        self.scratch_clip_a = buf1;
+        self.scratch_clip_b = buf2;
     }
 
     /// Triangle fan around `centre`, one colour per rim point, the rim
@@ -7682,6 +7901,75 @@ mod tests {
              cmd 2 clip pop\n\
              cmd 3 clip restore 1 1.000 2.000 3.000 4.000\n"
         );
+    }
+
+    fn shoelace(pts: &[[f32; 2]]) -> f32 {
+        let n = pts.len();
+        let mut sum = 0.0f32;
+        for i in 0..n {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            sum += a[0] * b[1] - b[0] * a[1];
+        }
+        (sum * 0.5).abs()
+    }
+
+    /// [`checker_shape`]'s own triangles, summed by the shoelace formula,
+    /// against the boundary [`ring_points`] draws for the very same
+    /// shape — the tiling must cover exactly that area, whatever the
+    /// corner style, or a corner is either left unpainted (2026-08-28's
+    /// bug: a plain rectangular clip left square notches past the
+    /// rounded fill) or painted past where the fill and frame agree the
+    /// shape ends.
+    #[test]
+    fn checker_shapes_tiles_cover_exactly_the_boundarys_own_area() {
+        let r = Rect::new(10.0, 20.0, 83.0, 47.0);
+        for corners in [
+            [Corner::SQUARE; 4],
+            [Corner::round(12.0); 4],
+            [Corner::chamfer(9.0); 4],
+        ] {
+            let mut ring = Vec::new();
+            ring_points(r, &corners, 8, &mut ring);
+            let want = shoelace(&ring);
+
+            let mut dl = DrawList::new();
+            dl.checker_shape(r, &corners, 8, 6.0, Color::WHITE, Color::BLACK);
+            let mut got = 0.0f32;
+            for tri in dl.verts.chunks_exact(3) {
+                got += shoelace(&[tri[0].pos, tri[1].pos, tri[2].pos]);
+            }
+            assert!(
+                (got - want).abs() < 0.05,
+                "{corners:?}: tiles covered {got}, the boundary itself is {want}"
+            );
+        }
+    }
+
+    /// The exact regression: a chequerboard under a FULLY rounded
+    /// (pill) patch used to paint a tile's own square corner right up
+    /// to the rect's literal corner point, which is a black or light
+    /// wedge poking out past the rounded fill and frame drawn over it.
+    /// After clipping every tile to the same rounded boundary, no
+    /// triangle may cover that point at all.
+    #[test]
+    fn checker_shape_never_paints_the_rects_own_corner_under_a_full_round() {
+        let r = Rect::new(0.0, 0.0, 64.0, 32.0);
+        let pill = [Corner::round(16.0); 4]; // 16 == r.h / 2, a true pill
+        let mut dl = DrawList::new();
+        dl.checker_shape(r, &pill, 8, 6.0, Color::WHITE, Color::BLACK);
+        let corner = [r.x, r.y];
+        let inside = |p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
+            let s = |a: [f32; 2], b: [f32; 2], p: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+            let (d1, d2, d3) = (s(a, b, p), s(b, c, p), s(c, a, p));
+            let (has_neg, has_pos) = (d1 < 0.0 || d2 < 0.0 || d3 < 0.0, d1 > 0.0 || d2 > 0.0 || d3 > 0.0);
+            !(has_neg && has_pos)
+        };
+        for tri in dl.verts.chunks_exact(3) {
+            assert!(
+                !inside(corner, tri[0].pos, tri[1].pos, tri[2].pos),
+                "a tile covered the rect's own corner under a full round"
+            );
+        }
     }
 }
 

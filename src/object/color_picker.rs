@@ -1,50 +1,54 @@
-//! Colour picker: a bank of per-notation sliders, the chosen colour as a
-//! patch, that same colour written out in one of six notations — typed
-//! into directly, in place, since this rewrite — and two grids of
-//! ready-made colours.
+//! Colour picker: a bank of sliders, the chosen colour as a patch, that
+//! same colour written out as `hsl(...)` — typed into directly, in place
+//! — and two grids of ready-made colours.
 //!
-//! THIS FILE'S OWN HEADER USED TO ARGUE AGAINST WHAT IS BUILT BELOW.
-//! Until this rewrite (2026-08-24) the case against "a page of sliders"
-//! ran for four paragraphs: three numbers are the SHAPE of a colour, not
-//! a way of ANSWERING what colour it is, and thirteen colours as
-//! thirty-nine rows was the fault the wheel was built to fix. The owner's
-//! instruction this time is explicit and is not being relitigated — a
-//! bank of sliders, one row per channel, HSV first — but the tension is
-//! resolved rather than dropped: every slider's TRACK is painted as a
-//! gradient of that channel's own colour, holding every OTHER channel at
-//! what the picker currently reads, so the control still answers "what
-//! colour is this" while a hand drags it — the same job the old value
-//! bar did, read across a bank of tracks instead of one. [`slider_stops`]
-//! is the one function that states what each gradient means; [`draw`]
-//! calls it and paints nothing of its own invention.
+//! HSL IS THE ONLY NOTATION (the owner's decision, 2026-08-28). Five
+//! others stood here through this file's own `Format` enum — HSV, ARGB,
+//! RGB, OKLCh, DEC — each with its own doc paragraph arguing for its
+//! place; the owner withdrew the argument rather than lost it, the same
+//! way CMYK and a separate `Rgba` notation were withdrawn before this
+//! file's 2026-08-24 rewrite ever ran. What is built below is what is
+//! left once a picker answers exactly one question ("what is this
+//! colour, in the one spelling everybody now reads it in") rather than
+//! six.
 //!
 //! WHY AN OBJECT AND NOT A DUMB SLICE OF ROWS. A slider bank could have
-//! been thirteen separate `object::slider` rows wired up by hand in
-//! `nacelle-desktop`, the way BASIC's HSV triple was until 2026-08-18 —
-//! and that is exactly the shape the very first paragraph of this file's
-//! history argues against: the notation, the round trip, the hue kept
-//! through the grey axis, the ready-made grid, ALL of it is behaviour
-//! this control owns so fourteen pickers on one page cannot each get it
-//! a little differently. The rows moved from a wheel to a bank; the
-//! reason there is exactly one place they are DEFINED did not.
+//! been three separate `object::slider` rows wired up by hand in
+//! `nacelle-desktop`, the way BASIC's own triple was before the
+//! 2026-08-18 rewrite that first gave this control its own object — the
+//! round trip, the hue kept through the grey axis, the ready-made grid,
+//! ALL of it is behaviour this control owns so fourteen pickers on one
+//! page cannot each get it a little differently.
 //!
-//! HSV IS THE DEFAULT NOTATION NOW (this rewrite), not ARGB:
-//! [`Format::ALL`] leads with it and [`Picker::of`] seeds new pickers on
-//! it. Every other notation is unchanged and reachable by the same cycle
-//! it always was.
-//!
-//! ONE CHANGE OF CANONICAL STATE, AND ONLY ONE: `hsv: [f32; 3]` plus
-//! `alpha` is STILL the sole thing a picker remembers between frames —
-//! see `changing_the_notation_changes_the_spelling_and_not_the_colour`
-//! and `the_notation_survives_twenty_round_trips` ("THE SCAR", below).
-//! Keeping N parallel representations in step across every format switch
-//! is exactly the bug class that test exists to catch, and HSL is no
-//! exception merely for gaining sliders of its own. HSL's sliders read
-//! and write through `rgb_to_hsl`/`hsl_to_rgb`, already tested, already
-//! correct; the one piece of hygiene beyond that is [`hsv_from_hsl`],
-//! factored out of `hsl_to_rgb`'s own body so an HSL slider WRITE lands
-//! on `hsv`/`alpha` directly instead of taking an extra lossy hop through
+//! CANONICAL STATE, AND WHY IT IS TWO KEPT NUMBERS AND NOT ONE: `hsv:
+//! [f32; 3]` plus `alpha` was the sole thing a picker remembered between
+//! frames while six notations shared the ring — see
+//! `the_notation_survives_twenty_round_trips` ("THE SCAR", below), still
+//! true of `hsv`/`alpha` themselves. HSL being the only one left
+//! (2026-08-28) surfaced a second hole of the SAME SHAPE hue's own kept
+//! field ([`Picker::hue`]) already existed to close: `hsv_from_hsl`
+//! answers saturation 0 at EITHER lightness extreme — black and white
+//! have none to give, by construction, the identical reason a colour on
+//! the grey axis has no hue to give — so a picker that re-derived HSL
+//! saturation from the colour every frame lost it the instant Lightness
+//! reached either end and never gave it back on the way out (found live,
+//! after this file already shipped: dragging Lightness to 0 % or 100 %
+//! snapped the Saturation slider to 0 %). [`Picker::hsl_sat`] is that
+//! second kept field, read and written the same way hue is. Every OTHER
+//! HSL slider still reads and writes through `rgb_to_hsl`/`hsl_to_rgb`;
+//! the one piece of hygiene beyond that is [`hsv_from_hsl`], factored
+//! out of `hsl_to_rgb`'s own body so an HSL slider WRITE lands on
+//! `hsv`/`alpha` directly instead of taking an extra lossy hop through
 //! full sRGB and back.
+//!
+//! `Picker::oklch`/`set_oklch` STAY, WITH NO `Format::Oklch` LEFT TO CALL
+//! THEM: a `.theme` file is written in OKLCh regardless of what notation
+//! a picker's OWN plate shows — `Settings::set_tone_from_picker` and
+//! every other crossing from a picked colour into the theme file reads
+//! or writes through these two, and losing THAT crossing was never part
+//! of the owner's instruction. "THE TRAP THIS FILE IS WRITTEN AROUND",
+//! below, is about that crossing and is unchanged by the notations lost
+//! around it.
 //!
 //! INLINE CLICK-TO-EDIT. The value plate is a target with real behaviour
 //! now: a press opens [`Picker::editing`], an
@@ -115,98 +119,52 @@ fn col(c: theme::ThemeColor) -> Color {
 
 // ------------------------------------------------------------- notation
 
-/// The most sliders any notation offers — RGB's three, everyone else's
-/// four (alpha). A Rust constant and not a theme token: it is dictated by
-/// which notations exist, not by taste, the same way [`Format::ALL`]'s
-/// own length is not a token either.
-const MAX_SLIDERS: usize = 4;
+/// The sliders HSL offers — three, alpha not among them (the owner's
+/// decision of 2026-08-28: a slider that ends every colour it touches at
+/// the same place a Save discards, since a theme's own colour tokens
+/// carry no alpha, was a control promising a move it could never keep).
+const MAX_SLIDERS: usize = 3;
 
 /// How the chosen colour is written out, read back in, and split into
-/// sliders.
-///
-/// SIX, AND EVERY ONE OF THEM EARNS ITS PLACE:
-///
-/// * [`Format::Hsv`] — the DEFAULT (this rewrite, 2026-08-24). Hue,
-///   saturation, value — the notation in which the sliders below explain
-///   themselves most directly, since HSV is the identity mapping onto
-///   [`Picker`]'s own canonical state.
-/// * [`Format::Argb`] — `#AARRGGBB`, the owner's original default
-///   (2026-08-18) and still offered. Eight digits, alpha first, so **the
-///   alpha lives in the format** and there is no separate opacity knob
-///   anywhere near this control.
-/// * [`Format::Rgb`] — six hex digits, no alpha byte at all — not even a
-///   dropped one. `Format::Argb`/[`Format::Dec`] carry alpha
-///   unconditionally, which is right for a colour a slider can fade and
-///   wrong for one that never had a fade to begin with: a control whose
-///   transparency lives entirely in a SEPARATE knob (a picker fed by
-///   `Settings::tone_bed`, say, with an OPACITY slider of its own) has
-///   nothing honest to put in an alpha byte, and RGB is the notation
-///   that says so by construction. THREE SLIDERS, not four — the one
-///   count [`MAX_SLIDERS`] does not reach.
-/// * [`Format::Oklch`] — `oklch(L, C, H / A)`, **mandatory**: it is what
-///   a `.theme` file is full of, so it is the only notation in which a
-///   value typed here and a value read out of the author's own file are
-///   the same text.
-/// * [`Format::Hsl`] — what web tooling means by "hue, saturation,
-///   lightness", and it is NOT [`Format::Hsv`]: at 100 % HSL is white
-///   and HSV is the full hue. Offering one and calling it the other is
-///   how a picker lies to half its users.
-/// * [`Format::Dec`] — four plain numbers 0..255, which is what
-///   screenshot tools, eyedroppers and image editors report.
-///
-/// NO CMYK: the owner withdrew it on 2026-08-18. It describes ink on
-/// paper and there is no press at the end of this pipeline. NO `Rgba`
-/// EITHER, as of this rewrite: it existed for CSS's own `#RRGGBBAA`
-/// spelling, and a grep of both this repository and `nacelle-desktop`
-/// found no caller outside this file that ever named it — the confusion
-/// insurance two byte notations differing only in alpha's position used
-/// to argue for was insuring against a collision that never happened.
+/// sliders — HSL, and only HSL (the owner's decision of 2026-08-28; see
+/// the module header for what stood here before and why it does not
+/// anymore). Kept as a one-variant type, rather than pulled out
+/// altogether, because [`Picker::format`] and [`write`]/[`parse`] still
+/// need one word to name what they read and write, and a future notation
+/// re-added here is a variant, not a second control.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
-    Hsv,
-    Argb,
-    Rgb,
-    Oklch,
     Hsl,
-    Dec,
 }
 
 impl Format {
-    /// The offer, in the order the control steps through it. HSV stands
-    /// first because it is the default (this rewrite) and a cycler that
-    /// started anywhere else would make the default the hardest one to
-    /// get back to.
-    pub const ALL: [Format; 6] =
-        [Format::Hsv, Format::Argb, Format::Rgb, Format::Oklch, Format::Hsl, Format::Dec];
+    /// The one notation on offer.
+    pub const ALL: [Format; 1] = [Format::Hsl];
 
     /// The word on the plate. Upper case like every other word this
     /// window puts on one; the CASE is the type role's business
     /// (`type.<role>.case`), and this is the word itself.
     pub fn word(self) -> &'static str {
         match self {
-            Format::Hsv => "HSV",
-            Format::Argb => "ARGB",
-            Format::Rgb => "RGB",
-            Format::Oklch => "OKLCH",
             Format::Hsl => "HSL",
-            Format::Dec => "DEC",
         }
     }
 
-    /// The next notation round the ring.
+    /// The next notation round the ring — itself, there being only the
+    /// one; [`Picker::cycle_format`] still calls this rather than a
+    /// caller assuming what it would find, so a notation re-added here
+    /// is reachable again with no change on that side.
     pub fn next(self) -> Format {
-        let i = Format::ALL.iter().position(|f| *f == self).unwrap_or(0);
-        Format::ALL[(i + 1) % Format::ALL.len()]
+        self
     }
 
-    /// How many sliders this notation's bank offers: three for RGB, four
-    /// (alpha included) for everyone else.
+    /// How many sliders HSL's own bank offers.
     pub fn slider_count(self) -> usize {
-        if self == Format::Rgb { 3 } else { MAX_SLIDERS }
+        MAX_SLIDERS
     }
 
-    /// The channel letter over slider `i`, in this format's own order —
-    /// the same order [`write`] spells the notation in.
+    /// The channel letter over slider `i`, in the order [`write`] spells
+    /// HSL in.
     ///
     /// PANICS past `slider_count()`, on purpose: every caller in this
     /// file walks `0..l.sliders.len()`, which IS `slider_count()` by
@@ -215,12 +173,7 @@ impl Format {
     /// colour this control was ever asked to show.
     pub fn slider_label(self, i: usize) -> &'static str {
         match self {
-            Format::Hsv => ["H", "S", "V", "A"][i],
-            Format::Argb => ["A", "R", "G", "B"][i],
-            Format::Rgb => ["R", "G", "B"][i],
-            Format::Oklch => ["L", "C", "H", "A"][i],
-            Format::Hsl => ["H", "S", "L", "A"][i],
-            Format::Dec => ["R", "G", "B", "A"][i],
+            Format::Hsl => ["H", "S", "L"][i],
         }
     }
 }
@@ -292,26 +245,21 @@ fn q8(v: f32) -> u8 {
 /// past what eight-bit output can hold. The two hex-and-byte notations
 /// need no such choice: a byte IS their resolution.
 pub fn write(c: Color, f: Format) -> String {
-    let (r, g, b, a) = (q8(c.r), q8(c.g), q8(c.b), q8(c.a));
     match f {
-        Format::Argb => format!("#{a:02X}{r:02X}{g:02X}{b:02X}"),
-        // No `a` in the format string at all — the byte is computed above
-        // for every other arm's sake and simply unused here, which is the
-        // whole difference from ARGB.
-        Format::Rgb => format!("#{r:02X}{g:02X}{b:02X}"),
-        // The theme's own spelling, called and not copied: one program,
-        // one way of writing a colour into a file.
-        Format::Oklch => theme::edit::oklch_literal(c.to_linear().to_oklch()),
-        Format::Hsv => {
-            let (h, s, v) = rgb_to_hsv(c.r, c.g, c.b);
-            with_alpha(format!("hsv({:.2}, {:.2}, {:.2}", h, s * 100.0, v * 100.0), c.a)
-        }
         Format::Hsl => {
             let (h, s, l) = rgb_to_hsl(c.r, c.g, c.b);
-            with_alpha(format!("hsl({:.2}, {:.2}, {:.2}", h, s * 100.0, l * 100.0), c.a)
+            write_hsl(h, s, l, c.a)
         }
-        Format::Dec => format!("{r}, {g}, {b}, {a}"),
     }
+}
+
+/// The `hsl(...)` spelling of one explicit set of coordinates — the one
+/// place [`write`] (a plain colour, nothing kept) and
+/// [`Picker::text`](Picker) (the picker's own KEPT hue and saturation,
+/// module header "CANONICAL STATE") both land, so the two can never drift
+/// apart on how a number becomes text.
+fn write_hsl(h: f32, s: f32, l: f32, a: f32) -> String {
+    with_alpha(format!("hsl({:.2}, {:.2}, {:.2}", h, s * 100.0, l * 100.0), a)
 }
 
 fn with_alpha(mut head: String, a: f32) -> String {
@@ -358,75 +306,40 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     hsv_to_rgb(h, sv, v)
 }
 
+/// A degree of hue as the 0..1 a hue SLIDER stands on — `h.rem_euclid`,
+/// EXCEPT at 360° itself.
+///
+/// `rem_euclid` is right for the COLOUR (hue 0° and hue 360° are the
+/// same point on the wheel) and wrong for the HANDLE: [`Picker::pick_slider`]
+/// writes `frac * 360.0` verbatim, so a drag to the track's own right
+/// edge (`frac == 1.0`) stores exactly `360.0`, and reading that back
+/// through a plain `rem_euclid(360.0)` answers `0.0` — the handle
+/// teleports to the track's LEFT edge the instant a press reaches its
+/// right one (2026-08-28's fix). Every OTHER hue this control ever
+/// holds comes back out of [`rgb_to_hsv`]/[`rgb_to_hsl`], which never
+/// themselves answer exactly `360.0`, so this only ever changes the one
+/// value a slider's own extreme can produce.
+fn hue_frac(h: f32) -> f32 {
+    if h > 0.0 && h % 360.0 == 0.0 { 1.0 } else { h.rem_euclid(360.0) / 360.0 }
+}
+
 /// Text back to a colour, or `None` when the text is not that notation.
 ///
 /// FORGIVING ABOUT PUNCTUATION, STRICT ABOUT MEANING. The name in front
-/// (`oklch(`, `hsv(`), the `#`, the parentheses, the commas and the
-/// spaces are all optional, because a person pasting a value from a file
-/// or a screenshot should not have to tidy it first; what is NOT
-/// optional is the count and the order of the numbers, because those are
-/// the notation. Six hex digits with no alpha mean an OPAQUE colour —
-/// the reading every tool in the world agrees on.
+/// (`hsl(`), the parentheses, the commas and the spaces are all
+/// optional, because a person pasting a value from a file should not
+/// have to tidy it first; what is NOT optional is the count and the
+/// order of the numbers, because those are the notation.
 pub fn parse(text: &str, f: Format) -> Option<Color> {
     let t = text.trim();
     match f {
-        Format::Argb | Format::Rgb => {
-            let h: String = t
-                .trim_start_matches('#')
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            if !h.is_ascii() || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
-            match (h.len(), f) {
-                // Six digits is opaque under either hex notation, RGB's
-                // own included — the reading every tool in the world
-                // agrees on (this function's own head note).
-                (6, _) => Some(Color::rgb8(p(0)?, p(2)?, p(4)?)),
-                (8, Format::Argb) => Some(Color::rgba8(p(2)?, p(4)?, p(6)?, p(0)?)),
-                // Eight digits pasted into an RGB field are read
-                // red-green-blue-alpha — the order every drawing program
-                // uses once RGB grows an alpha byte — forgiving about the
-                // extra byte rather than rejecting a value that is
-                // plainly a colour.
-                (8, _) => Some(Color::rgba8(p(0)?, p(2)?, p(4)?, p(6)?)),
-                _ => None,
-            }
-        }
-        Format::Oklch => {
-            let (n, a) = numbers(t, "oklch")?;
+        Format::Hsl => {
+            let (n, a) = numbers(t, "hsl")?;
             if n.len() != 3 {
                 return None;
             }
-            // The decode-free direction: OKLCh IS linear light, so the
-            // encode happens on the way OUT and nowhere else.
-            Some(
-                Color::from_oklch(Oklch { l: n[0], c: n[1], h: n[2], alpha: a.unwrap_or(1.0) })
-                    .to_srgb(),
-            )
-        }
-        Format::Hsv | Format::Hsl => {
-            let (n, a) = numbers(t, if f == Format::Hsv { "hsv" } else { "hsl" })?;
-            if n.len() != 3 {
-                return None;
-            }
-            let (r, g, b) = if f == Format::Hsv {
-                hsv_to_rgb(n[0], n[1] / 100.0, n[2] / 100.0)
-            } else {
-                hsl_to_rgb(n[0], n[1] / 100.0, n[2] / 100.0)
-            };
+            let (r, g, b) = hsl_to_rgb(n[0], n[1] / 100.0, n[2] / 100.0);
             Some(Color { r, g, b, a: a.unwrap_or(1.0).clamp(0.0, 1.0) })
-        }
-        Format::Dec => {
-            let (n, _) = numbers(t, "")?;
-            let b8 = |v: f32| (v / 255.0).clamp(0.0, 1.0);
-            match n.len() {
-                3 => Some(Color { r: b8(n[0]), g: b8(n[1]), b: b8(n[2]), a: 1.0 }),
-                4 => Some(Color { r: b8(n[0]), g: b8(n[1]), b: b8(n[2]), a: b8(n[3]) }),
-                _ => None,
-            }
         }
     }
 }
@@ -459,19 +372,6 @@ fn numbers(t: &str, name: &str) -> Option<(Vec<f32>, Option<f32>)> {
 
 // --------------------------------------------------------------- the model
 
-/// The OKLCh chroma slider's own TRAVEL — not the channel's theoretical
-/// range, which has no fixed ceiling at all, but a REACHABLE one: sRGB's
-/// own maximum is under 0.32 and BT.2020's under 0.46
-/// (`theme::color::Color::max_chroma_in`'s own doc), so 0.4 gives every
-/// named space headroom above its real ceiling without spending most of
-/// the slider on the dead zone between 0.4 and `CHROMA_CEILING`'s 0.5,
-/// which nothing practical reaches. A picker loaded from a theme with a
-/// chroma past this — or any channel past a slider's own nominal travel
-/// — PINS its fraction at 1.0 rather than erroring: `wheel_pick`'s
-/// "clamped, never rejected" rule is gone with the wheel, not with the
-/// principle.
-const OKLCH_C_TRAVEL: f32 = 0.4;
-
 /// What the control holds between frames.
 ///
 /// THE HUE IS KEPT, NOT DERIVED. A colour on the grey axis has no hue —
@@ -481,14 +381,31 @@ const OKLCH_C_TRAVEL: f32 = 0.4;
 /// axis, and leave it there when the drag came back. `hsv[0]` is
 /// therefore the state, and the COLOUR is what it answers, together with
 /// `hsv[1]`, `hsv[2]` and `alpha`.
+///
+/// How far short of 0.0/1.0 lightness still counts as "at the extreme"
+/// for [`Picker::set_colour`]'s own kept-saturation guard — see that
+/// function's own doc for why an exact `> 0.0 && < 1.0` boundary is not
+/// enough.
+const LIGHTNESS_EXTREME_MARGIN: f32 = 1e-4;
+
 pub struct Picker {
     /// Hue in degrees, saturation and value 0..1 — HSV's own coordinates
-    /// and this control's sole canonical state (module header, "ONE
-    /// CHANGE OF CANONICAL STATE").
+    /// and this control's OWN canonical state (module header,
+    /// "CANONICAL STATE"). `hsv[1]`/`hsv[2]` are the colour's HSV
+    /// saturation and value, not HSL's own saturation — see `hsl_sat`
+    /// for that.
     hsv: [f32; 3],
     /// The alpha channel, which is part of the colour and not a knob
     /// beside it (the owner's decision of 2026-08-18).
     alpha: f32,
+    /// The HSL saturation the picker is standing on — kept, not
+    /// re-derived, the same reason and the same way [`hue`](Self::hue)
+    /// is (module header, "CANONICAL STATE"). `hsv_from_hsl` answers 0
+    /// at either lightness extreme regardless of what is asked for, so
+    /// reading this back out of the colour instead would zero the
+    /// Saturation slider's own reading the instant Lightness reached
+    /// either end and never give it back on the way out.
+    hsl_sat: f32,
     /// Which notation the text side is written in.
     pub format: Format,
     /// The inline editor over the value plate, while one stands open —
@@ -501,7 +418,13 @@ pub struct Picker {
 impl Picker {
     /// A picker opened on a colour.
     pub fn of(c: Color) -> Picker {
-        let mut p = Picker { hsv: [0.0, 0.0, 0.0], alpha: 1.0, format: Format::Hsv, editing: None };
+        let mut p = Picker {
+            hsv: [0.0, 0.0, 0.0],
+            alpha: 1.0,
+            hsl_sat: 0.0,
+            format: Format::Hsl,
+            editing: None,
+        };
         p.set_colour(c);
         p
     }
@@ -527,15 +450,38 @@ impl Picker {
 
     /// Moves the picker onto a colour. The hue is taken from the colour
     /// EXCEPT on the grey axis, where the colour has none to give and the
-    /// state keeps the hue it was already standing on.
+    /// state keeps the hue it was already standing on — and, the same
+    /// way, the HSL saturation is taken from the colour except at either
+    /// lightness extreme, which has none to give either.
+    ///
+    /// THE LIGHTNESS-EXTREME GUARD HAS A MARGIN, NOT A KNIFE EDGE
+    /// (2026-08-28, found live a second time): `Picker::oklch`/`set_oklch`
+    /// — the exact crossing every theme save and reload goes through — do
+    /// not round-trip white back to bit-exact `(1, 1, 1)`; the OKLab
+    /// matrix and cube-root arithmetic leaves roughly 1e-7 of chroma
+    /// behind, which decodes to something like `(0.99999994, ..., ...)`,
+    /// three EQUAL channels a hair short of 1.0. `l < 1.0` on that number
+    /// is true, so an exact-boundary guard reads it as "real information"
+    /// and overwrites the kept saturation with the 0 three equal channels
+    /// always give — reproducing the exact bug this field exists to fix,
+    /// through a save/reload instead of a drag. `LIGHTNESS_EXTREME_MARGIN`
+    /// is comfortably past that noise (which measures roughly 1e-7) and
+    /// nowhere near a lightness a slider or a typed value can mean on
+    /// purpose (the plate itself prints lightness to two decimal PERCENT
+    /// places — 1e-4 of span).
     pub fn set_colour(&mut self, c: Color) {
-        let (h, s, v) = rgb_to_hsv(c.r.clamp(0.0, 1.0), c.g.clamp(0.0, 1.0), c.b.clamp(0.0, 1.0));
+        let (r, g, b) = (c.r.clamp(0.0, 1.0), c.g.clamp(0.0, 1.0), c.b.clamp(0.0, 1.0));
+        let (h, s, v) = rgb_to_hsv(r, g, b);
         if s > 0.0 {
             self.hsv[0] = h;
         }
         self.hsv[1] = s;
         self.hsv[2] = v;
         self.alpha = c.a.clamp(0.0, 1.0);
+        let (_, s_l, l) = rgb_to_hsl(r, g, b);
+        if l > LIGHTNESS_EXTREME_MARGIN && l < 1.0 - LIGHTNESS_EXTREME_MARGIN {
+            self.hsl_sat = s_l;
+        }
     }
 
     /// The chosen colour in the space the theme file writes.
@@ -558,6 +504,12 @@ impl Picker {
         self.hsv[0]
     }
 
+    /// The HSL saturation the picker is standing on, kept the same way
+    /// [`hue`](Self::hue) is (module header, "CANONICAL STATE").
+    pub fn hsl_sat(&self) -> f32 {
+        self.hsl_sat
+    }
+
     /// How many sliders `format` offers.
     pub fn slider_count(&self) -> usize {
         self.format.slider_count()
@@ -569,39 +521,19 @@ impl Picker {
     }
 
     /// Channel `i`'s handle position, 0..1 of ITS OWN range — hue 180° is
-    /// 0.5 regardless of hue's range being 0..360 and alpha's being 0..1.
-    /// A pure function of `colour()`/`oklch()` for every notation except
-    /// HSV, where it reads `hsv`/`hue()` directly: HSV is the identity
-    /// mapping onto this control's own canonical state, not a special
-    /// case of it.
+    /// 0.5 regardless of hue's range being 0..360. Hue and saturation
+    /// read the two KEPT fields directly ([`hue`](Self::hue),
+    /// [`hsl_sat`](Self::hsl_sat)); lightness is a pure function of
+    /// `colour()`, which is always well-defined.
     pub fn slider_at(&self, i: usize) -> f32 {
         match self.format {
-            Format::Hsv => match i {
-                0 => self.hue().rem_euclid(360.0) / 360.0,
-                1 => self.hsv[1],
-                2 => self.hsv[2],
-                _ => self.alpha,
-            },
             Format::Hsl => {
                 let c = self.colour();
-                let (_, s, l) = rgb_to_hsl(c.r, c.g, c.b);
+                let (_, _, l) = rgb_to_hsl(c.r, c.g, c.b);
                 match i {
-                    0 => self.hue().rem_euclid(360.0) / 360.0,
-                    1 => s,
-                    2 => l,
-                    _ => self.alpha,
-                }
-            }
-            Format::Argb | Format::Rgb | Format::Dec => {
-                channel_of(self.colour(), byte_channel(self.format, i))
-            }
-            Format::Oklch => {
-                let ok = self.oklch();
-                match i {
-                    0 => ok.l.clamp(0.0, 1.0),
-                    1 => (ok.c / OKLCH_C_TRAVEL).clamp(0.0, 1.0),
-                    2 => ok.h.rem_euclid(360.0) / 360.0,
-                    _ => self.alpha,
+                    0 => hue_frac(self.hue()),
+                    1 => self.hsl_sat,
+                    _ => l,
                 }
             }
         }
@@ -616,57 +548,55 @@ impl Picker {
     pub fn pick_slider(&mut self, i: usize, frac: f32) {
         let frac = frac.clamp(0.0, 1.0);
         match self.format {
-            Format::Hsv => match i {
-                0 => self.hsv[0] = frac * 360.0,
-                1 => self.hsv[1] = frac,
-                2 => self.hsv[2] = frac,
-                _ => self.alpha = frac,
-            },
-            // HSL's S and L land on `hsv[1..3]` through `hsv_from_hsl`
-            // directly (module header) — hue untouched, and no round
-            // trip through full sRGB for a write that never needed one.
+            // S and L land on `hsv[1..3]` through `hsv_from_hsl` directly
+            // (module header) — hue untouched, and no round trip through
+            // full sRGB for a write that never needed one. Saturation
+            // ALSO always writes `hsl_sat` outright, the same as hue's
+            // own arm does for `hsv[0]` — the hand on THIS slider always
+            // wins regardless of where Lightness currently sits.
+            // Lightness reads `hsl_sat` back rather than re-deriving it
+            // from the colour, which is exactly what breaks at either
+            // lightness extreme (module header, "CANONICAL STATE").
             Format::Hsl => match i {
                 0 => self.hsv[0] = frac * 360.0,
                 1 => {
+                    self.hsl_sat = frac;
                     let c = self.colour();
                     let (_, _, l) = rgb_to_hsl(c.r, c.g, c.b);
                     let (sv, v) = hsv_from_hsl(frac, l);
                     self.hsv[1] = sv;
                     self.hsv[2] = v;
                 }
-                2 => {
-                    let c = self.colour();
-                    let (_, s, _) = rgb_to_hsl(c.r, c.g, c.b);
-                    let (sv, v) = hsv_from_hsl(s, frac);
+                _ => {
+                    let (sv, v) = hsv_from_hsl(self.hsl_sat, frac);
                     self.hsv[1] = sv;
                     self.hsv[2] = v;
                 }
-                _ => self.alpha = frac,
             },
-            // Byte notations reconstruct a `Color` with one channel
-            // changed and call `set_colour` — the same path `set_text`
-            // already uses for typed hex, so a drag and a typed value
-            // behave identically at the grey axis.
-            Format::Argb | Format::Rgb | Format::Dec => {
-                let ch = byte_channel(self.format, i);
-                self.set_colour(with_channel(self.colour(), ch, frac));
-            }
-            Format::Oklch => {
-                let mut ok = self.oklch();
-                match i {
-                    0 => ok.l = frac,
-                    1 => ok.c = frac * OKLCH_C_TRAVEL,
-                    2 => ok.h = frac * 360.0,
-                    _ => ok.alpha = frac,
-                }
-                self.set_oklch(ok);
-            }
         }
     }
 
     /// The colour as text, in the notation in force.
+    ///
+    /// HUE AND SATURATION ARE THE KEPT ONES, NOT [`write`]'s OWN FRESH
+    /// READ (found live, after the fix that keeps them for the SLIDERS
+    /// shipped, 2026-08-28): [`write`] takes a plain `Color` and has no
+    /// kept state to read, so its own `rgb_to_hsl` answers 0 for either
+    /// one at the axis/extreme they have none to give at — correct for a
+    /// swatch, which has no hand on it to remember, and WRONG for this
+    /// picker's own plate, which would then print "0% saturation" a
+    /// breath after the Saturation slider beside it — reading the exact
+    /// same field — printed 60%. Lightness alone is `write`'s own fresh
+    /// read: it is never degenerate on its own, only H/S's OWN business
+    /// is what a Lightness extreme empties out.
     pub fn text(&self) -> String {
-        write(self.colour(), self.format)
+        match self.format {
+            Format::Hsl => {
+                let c = self.colour();
+                let (_, _, l) = rgb_to_hsl(c.r, c.g, c.b);
+                write_hsl(self.hue().rem_euclid(360.0), self.hsl_sat, l, c.a)
+            }
+        }
     }
 
     /// Text typed by a person. `false` means it was not read and NOTHING
@@ -743,11 +673,11 @@ impl Picker {
 /// Where every part of the control stands, in the caller's coordinates.
 #[derive(Clone, Debug)]
 pub struct Layout {
-    /// One row per channel this notation offers — 3 for RGB, 4 for
-    /// everyone else ([`Format::slider_count`]) — vertically centred in a
-    /// band that is always [`MAX_SLIDERS`] slots tall regardless of how
-    /// many are populated (`layout_with`'s own note), so the control's
-    /// total height never depends on which format is showing.
+    /// One row per channel this notation offers — [`MAX_SLIDERS`], the
+    /// same for all six ([`Format::slider_count`]) — vertically centred
+    /// in a band that is always that many slots tall (`layout_with`'s
+    /// own note), so the control's total height never depends on which
+    /// format is showing.
     pub sliders: Vec<Rect>,
     /// The chosen colour over the transparency checker.
     pub patch: Rect,
@@ -907,8 +837,8 @@ fn layout_with(m: &Metrics, area: Rect, slider_count: usize, custom: usize) -> (
     // inscribed-square collapse mode the way the wheel's box had: a
     // slider that narrows just gets thinner, it never disappears.
     let n = slider_count.min(MAX_SLIDERS);
-    // THE RESERVED BAND IS ALWAYS FOUR SLOTS TALL, populated or not —
-    // `bank_h` reads no count at all — and the POPULATED rows are
+    // THE RESERVED BAND IS ALWAYS MAX_SLIDERS SLOTS TALL, populated or
+    // not — `bank_h` reads no count at all — and the POPULATED rows are
     // centred inside it. That is the whole answer to "the control must
     // not jump around when the format cycles": it is not a policy kept
     // by hand, it is `bank_h` never being a function of `n`.
@@ -1012,6 +942,9 @@ fn shape(t: &theme::ResolvedTheme, r: Rect) -> ([Corner; 4], u8) {
 /// The chequerboard a colour with alpha is shown against — otherwise a
 /// transparent colour and a colour the same shade as the page are the
 /// same picture, and the one control that owns alpha could not show it.
+/// Clipped to the SAME rounded boundary `r`'s own fill and frame use
+/// (2026-08-28) — a plain rectangular clip left the tiles' own square
+/// corners showing past the rounded patch drawn over them.
 fn checker(ctx: &mut Ctx, r: Rect) {
     static SIZE: OnceLock<TokenId> = OnceLock::new();
     static A: OnceLock<TokenId> = OnceLock::new();
@@ -1019,15 +952,8 @@ fn checker(ctx: &mut Ctx, r: Rect) {
     let t = theme::resolved();
     let s = t.px(tok(&SIZE, "picker.checker")).max(1.0);
     let (a, b) = (col(t.color(tok(&A, "component.picker.checker_a"))), col(t.color(tok(&B, "component.picker.checker_b"))));
-    ctx.dl.push_clip(r.x, r.y, r.w, r.h);
-    let (nx, ny) = ((r.w / s).ceil() as usize, (r.h / s).ceil() as usize);
-    for iy in 0..ny {
-        for ix in 0..nx {
-            let c = if (ix + iy) % 2 == 0 { a } else { b };
-            ctx.dl.rect(r.x + ix as f32 * s, r.y + iy as f32 * s, s, s, c);
-        }
-    }
-    ctx.dl.pop_clip();
+    let (c, seg) = shape(t, r);
+    ctx.dl.checker_shape(r, &c, seg, s, a, b);
 }
 
 /// The frame every part of this control wears: one ring, one corner
@@ -1062,45 +988,8 @@ fn handle(ctx: &mut Ctx, at: Rect) {
     );
 }
 
-fn channel_of(c: Color, ch: u8) -> f32 {
-    let raw = match ch {
-        0 => c.r,
-        1 => c.g,
-        2 => c.b,
-        _ => c.a,
-    };
-    q8(raw) as f32 / 255.0
-}
-
-fn with_channel(c: Color, ch: u8, v: f32) -> Color {
-    let v = v.clamp(0.0, 1.0);
-    match ch {
-        0 => Color { r: v, ..c },
-        1 => Color { g: v, ..c },
-        2 => Color { b: v, ..c },
-        _ => Color { a: v, ..c },
-    }
-}
-
-/// Slider index `i`, IN THIS FORMAT'S OWN ORDER, as a canonical RGBA
-/// channel (0=R, 1=G, 2=B, 3=A) — the one table that says where alpha
-/// stands in each byte notation's own spelling (ARGB first, RGB never,
-/// DEC last).
-fn byte_channel(f: Format, i: usize) -> u8 {
-    match f {
-        Format::Argb => [3u8, 0, 1, 2][i],
-        Format::Rgb => [0u8, 1, 2][i],
-        Format::Dec => [0u8, 1, 2, 3][i],
-        _ => unreachable!("byte_channel is only called for the byte notations"),
-    }
-}
-
 fn two_stops(a: Color, b: Color) -> Vec<(f32, Color)> {
     vec![(0.0, a), (1.0, b)]
-}
-
-fn alpha_stops(c: Color) -> Vec<(f32, Color)> {
-    two_stops(Color { a: 0.0, ..c }, Color { a: 1.0, ..c })
 }
 
 /// Seven stops at every 60° kink `hsv_to_rgb` has — exact across the
@@ -1120,41 +1009,17 @@ fn hue_stops(f: impl Fn(f32) -> Color) -> Vec<(f32, Color)> {
 /// nothing else decides what a track looks like.
 fn slider_stops(p: &Picker, i: usize) -> Vec<(f32, Color)> {
     match p.format {
-        // The byte notations: a byte IS its own channel, so sweeping it
-        // end to end is affine in that one channel and exact on two
-        // stops — the old value bar's own argument, applied trivially.
-        Format::Argb | Format::Rgb | Format::Dec => {
-            let ch = byte_channel(p.format, i);
-            let c = p.colour();
-            two_stops(with_channel(c, ch, 0.0), with_channel(c, ch, 1.0))
-        }
-        Format::Hsv => match i {
-            0 => hue_stops(|h| {
-                let (r, g, b) = hsv_to_rgb(h, p.hsv[1], p.hsv[2]);
-                Color { r, g, b, a: 1.0 }
-            }),
-            // `rgb(h, s, v) = rgb(h, 1, v)·s + grey(v)·(1−s)` — affine at
-            // fixed hue and value, exact on two stops.
-            1 => {
-                let (r, g, b) = hsv_to_rgb(p.hsv[0], 0.0, p.hsv[2]);
-                let grey = Color { r, g, b, a: 1.0 };
-                let (r, g, b) = hsv_to_rgb(p.hsv[0], 1.0, p.hsv[2]);
-                two_stops(grey, Color { r, g, b, a: 1.0 })
-            }
-            // `rgb(h, s, v) = v · rgb(h, s, 1)` — black to this
-            // saturation's own hue, the old bar's own law, unmoved.
-            2 => {
-                let (r, g, b) = hsv_to_rgb(p.hsv[0], p.hsv[1], 1.0);
-                two_stops(Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, Color { r, g, b, a: 1.0 })
-            }
-            _ => alpha_stops(p.colour()),
-        },
         Format::Hsl => {
             let c = p.colour();
-            let (_, s_l, l) = rgb_to_hsl(c.r, c.g, c.b);
+            let (_, _, l) = rgb_to_hsl(c.r, c.g, c.b);
+            // `p.hsl_sat()`, the KEPT saturation, not a fresh
+            // `rgb_to_hsl` read — a track painted from the derived one
+            // would show a flat, desaturated preview the instant
+            // Lightness reached either extreme, the same failure
+            // `pick_slider`'s own fix is about.
             match i {
                 0 => hue_stops(|h| {
-                    let (r, g, b) = hsl_to_rgb(h, s_l, l);
+                    let (r, g, b) = hsl_to_rgb(h, p.hsl_sat(), l);
                     Color { r, g, b, a: 1.0 }
                 }),
                 // Affine at fixed lightness and hue — the same shape as
@@ -1169,40 +1034,14 @@ fn slider_stops(p: &Picker, i: usize) -> Vec<(f32, Color)> {
                 // piecewise-affine in `l` with its one kink at l = 0.5
                 // (the cone's own middle), so three stops — not two —
                 // are exact.
-                2 => [0.0f32, 0.5, 1.0]
+                _ => [0.0f32, 0.5, 1.0]
                     .into_iter()
                     .map(|l2| {
-                        let (r, g, b) = hsl_to_rgb(p.hue(), s_l, l2);
+                        let (r, g, b) = hsl_to_rgb(p.hue(), p.hsl_sat(), l2);
                         (l2, Color { r, g, b, a: 1.0 })
                     })
                     .collect(),
-                _ => alpha_stops(c),
             }
-        }
-        Format::Oklch => {
-            if i == 3 {
-                return alpha_stops(p.colour());
-            }
-            // No closed form survives the encode: `Color::from_oklch`
-            // decodes through a nonlinear gamma and clips to the output
-            // gamut, so this is the one bank whose track is a SAMPLE and
-            // not a proof, unlike every other arm above. Eight segments
-            // reads as a ramp without spending vertices a drag will
-            // never see the seams of.
-            let ok = p.oklch();
-            const N: usize = 8;
-            (0..=N)
-                .map(|k| {
-                    let t = k as f32 / N as f32;
-                    let mut o = ok;
-                    match i {
-                        0 => o.l = t,
-                        1 => o.c = t * OKLCH_C_TRAVEL,
-                        _ => o.h = t * 360.0,
-                    }
-                    (t, Color { a: 1.0, ..Color::from_oklch(o).to_srgb() })
-                })
-                .collect()
         }
     }
 }
@@ -1218,8 +1057,42 @@ fn slider_stops(p: &Picker, i: usize) -> Vec<(f32, Color)> {
 /// `p` IS `&mut` even though this is "only drawing": `text_input::draw`
 /// mutates its `InputModel` while drawing it (blink phase, horizontal
 /// scroll, its own measure cache), and the model lives on the picker.
-pub fn draw(ctx: &mut Ctx, l: &Layout, p: &mut Picker, custom: &[Color], text_id: FocusId) {
+
+/// Half the handle's own width — the radius a slider's travel is inset
+/// by ([`slider_travel`]), so the round marker [`draw`] paints never
+/// reaches past the track it stands in.
+fn handle_radius() -> f32 {
     static HANDLE_R: OnceLock<TokenId> = OnceLock::new();
+    theme::resolved().px(tok(&HANDLE_R, "picker.handle"))
+}
+
+/// A slider's own track `r`, inset by the handle's radius on each side
+/// — the range the handle's CENTRE travels across, so its drawn edges
+/// land exactly on `r`'s own edges at either extreme instead of
+/// overshooting past them (2026-08-28: they used to, which silently
+/// swallowed a press on the outer half of the knob at either end — see
+/// [`slider_frac`]). The one place this control decides where a
+/// slider's ends really are; [`draw`] paints the handle across it and
+/// [`slider_frac`] reads a press back through the same inset, so the
+/// two stay exact inverses of one another.
+fn slider_travel(r: Rect) -> Rect {
+    let inset = handle_radius().min(r.w / 2.0);
+    Rect::new(r.x + inset, r.y, (r.w - 2.0 * inset).max(0.0), r.h)
+}
+
+/// The fraction along slider `i`'s own track a point answers to — the
+/// exact inverse of where [`draw`] paints the handle, through the same
+/// [`slider_travel`] inset, so a press anywhere on the handle's own
+/// drawn face reads back the frac that put it there, all the way to
+/// both ends of the track, instead of landing short at either one.
+/// Clamped past either end, matching [`Picker::pick_slider`]'s own
+/// promise for a drag that outruns the track.
+pub fn slider_frac(track: Rect, x: f32) -> f32 {
+    let travel = slider_travel(track);
+    ((x - travel.x) / travel.w.max(1.0)).clamp(0.0, 1.0)
+}
+
+pub fn draw(ctx: &mut Ctx, l: &Layout, p: &mut Picker, custom: &[Color], text_id: FocusId) {
     static ROLE: OnceLock<TokenId> = OnceLock::new();
     static TEXT_INK: OnceLock<TokenId> = OnceLock::new();
     let t = theme::resolved();
@@ -1234,12 +1107,14 @@ pub fn draw(ctx: &mut Ctx, l: &Layout, p: &mut Picker, custom: &[Color], text_id
 
     // ---- the slider bank: track, frame, knob, letter, one row at a
     // time; [`slider_stops`] is the one statement of what a track means.
-    let hr_px = t.px(tok(&HANDLE_R, "picker.handle"));
+    let hr_px = handle_radius();
     for (i, r) in l.sliders.iter().enumerate() {
         let stops = slider_stops(p, i);
-        ctx.dl.rect_grad(*r, &stops, 0.0);
+        let (c, seg) = shape(t, *r);
+        ctx.dl.rect_grad_shape(*r, &stops, 0.0, &c, seg);
         frame(ctx, *r);
-        let kx = r.x + p.slider_at(i).clamp(0.0, 1.0) * r.w;
+        let travel = slider_travel(*r);
+        let kx = travel.x + p.slider_at(i).clamp(0.0, 1.0) * travel.w;
         handle(ctx, Rect::new(kx - hr_px, r.y, hr_px * 2.0, r.h));
         let label = Rect::new(r.x - m.slider_label_w, r.y, m.slider_label_w, r.h);
         ctx.dl.text_center(
@@ -1356,10 +1231,9 @@ fn swatch(ctx: &mut Ctx, r: Rect, c: Color) {
 /// `Part::Text` alone, the one part a person types into.
 ///
 /// EVERY VALUE IS THE COLOUR ITSELF, NOT ITS COORDINATES, on the base
-/// and custom cells and the bank button — `write`'s RGBA form, because a
-/// swatch can carry alpha (`swatch`'s own chequerboard says so) and a
-/// notation that dropped the byte would misreport a transparent cell as
-/// opaque. `bases` and `custom` are handed in rather than re-read so a
+/// and custom cells and the bank button — `write`'s HSL form, which
+/// carries alpha too (`swatch`'s own chequerboard says a swatch can hold
+/// one). `bases` and `custom` are handed in rather than re-read so a
 /// part's value can never disagree with the swatch [`draw`] paints for
 /// the same index.
 fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> AccessInfo {
@@ -1371,7 +1245,6 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
                 "V" => ("catalog.color_picker.channel_value", "Value"),
                 "L" => ("catalog.color_picker.channel_lightness", "Lightness"),
                 "C" => ("catalog.color_picker.channel_chroma", "Chroma"),
-                "A" => ("catalog.color_picker.channel_alpha", "Alpha"),
                 "R" => ("catalog.color_picker.channel_red", "Red"),
                 "G" => ("catalog.color_picker.channel_green", "Green"),
                 "B" => ("catalog.color_picker.channel_blue", "Blue"),
@@ -1405,7 +1278,7 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
             );
             if let Some(c) = bases.get(i) {
                 info = info
-                    .with_value(write(*c, Format::Argb))
+                    .with_value(write(*c, Format::Hsl))
                     .with_index(i as u32 + 1, bases.len() as u32);
             }
             info
@@ -1417,7 +1290,7 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
             );
             if let Some(c) = custom.get(i) {
                 info = info
-                    .with_value(write(*c, Format::Argb))
+                    .with_value(write(*c, Format::Hsl))
                     .with_index(i as u32 + 1, custom.len() as u32);
             }
             info
@@ -1426,7 +1299,7 @@ fn part_access(part: Part, p: &Picker, bases: &[Color], custom: &[Color]) -> Acc
             Role::Button,
             ui::theme_catalog_named("catalog.color_picker.save", "Save current colour").to_string(),
         )
-        .with_value(write(p.colour(), Format::Argb)),
+        .with_value(write(p.colour(), Format::Hsl)),
     }
 }
 
@@ -1531,85 +1404,41 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_typed_in_hex_comes_back_the_same_colour() {
-        // ARGB: alpha FIRST, which is the whole reason this notation is
-        // the one that survives a round trip through a control opened on
-        // it explicitly (HSV is the DEFAULT now, and neither hex
-        // notation is a "hsv(...)" string, so a control that wants a hex
-        // round trip has to say ARGB itself).
-        let c = parse("#80112233", Format::Argb).expect("eight digits are a colour");
-        assert_eq!(write(c, Format::Argb), "#80112233");
-        assert_eq!((q8(c.r), q8(c.g), q8(c.b), q8(c.a)), (0x11, 0x22, 0x33, 0x80));
-        // Six digits are opaque under both hex notations, and come back
-        // as eight with the alpha where that notation keeps it — which
-        // is the whole of the difference between them.
-        for (f, want) in [(Format::Argb, "#FF3FE3AE"), (Format::Rgb, "#3FE3AE")] {
-            let s = parse("#3FE3AE", f).expect("six digits are a colour");
-            assert_eq!(q8(s.a), 255);
-            assert_eq!(write(s, f), want);
-        }
-        // Through the control itself, in ARGB: what the picker shows is
-        // what a person typed.
-        let mut p = Picker::of(Color::BLACK);
-        p.format = Format::Argb;
-        assert!(p.set_text("#80112233"));
-        assert_eq!(p.text(), "#80112233");
-    }
-
-    #[test]
     fn changing_the_notation_changes_the_spelling_and_not_the_colour() {
+        //! Only HSL stands now, so "changes" is a claim about a full trip
+        //! round the ring being a no-op — the same invariant this test
+        //! pinned when six notations shared the ring, kept because the
+        //! canonical state's own promise (module header, "ONE CHANGE OF
+        //! CANONICAL STATE") did not change with their removal.
         let mut p = Picker::of(Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC));
         let before = p.colour();
-        let mut seen = Vec::new();
-        for _ in 0..Format::ALL.len() {
-            seen.push(p.text());
-            p.cycle_format();
-            assert_eq!(p.colour(), before, "the notation moved the colour");
-        }
-        // A full ring comes back to where it started — HSV, the default
-        // this rewrite made of it.
-        assert_eq!(p.format, Format::Hsv);
-        let mut sorted = seen.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), Format::ALL.len());
-        for (f, s) in Format::ALL.iter().zip(seen.iter()) {
-            if let Format::Oklch | Format::Hsv | Format::Hsl = f {
-                assert!(
-                    s.starts_with(&f.word().to_lowercase()),
-                    "{f:?} must announce itself: {s}"
-                );
-            }
-        }
-        for f in Format::ALL {
-            let eps = match f {
-                Format::Argb | Format::Rgb | Format::Dec => 0.5 / 255.0,
-                Format::Oklch | Format::Hsv | Format::Hsl => 1e-3,
-            };
-            let s = write(before, f);
-            let back = parse(&s, f).unwrap_or_else(|| panic!("{f:?} cannot read {s}"));
-            let want_a = if f == Format::Rgb { 1.0 } else { before.a };
-            for (a, b, ch) in
-                [(back.r, before.r, 'r'), (back.g, before.g, 'g'), (back.b, before.b, 'b'), (back.a, want_a, 'a')]
-            {
-                approx(a, b, eps, &format!("{f:?} channel {ch}"));
-            }
+        p.cycle_format();
+        assert_eq!(p.colour(), before, "the notation moved the colour");
+        assert_eq!(p.format, Format::Hsl, "the one notation stayed itself");
+        let s = write(before, Format::Hsl);
+        assert!(s.starts_with("hsl"), "HSL must announce itself: {s}");
+        let back = parse(&s, Format::Hsl).unwrap_or_else(|| panic!("HSL cannot read {s}"));
+        for (a, b, ch) in
+            [(back.r, before.r, 'r'), (back.g, before.g, 'g'), (back.b, before.b, 'b'), (back.a, before.a, 'a')]
+        {
+            approx(a, b, 1e-3, &format!("channel {ch}"));
         }
     }
 
     #[test]
-    fn the_alpha_of_an_argb_value_reaches_the_theme() {
+    fn the_alpha_of_a_typed_hsl_value_reaches_the_theme() {
+        // hsl(160.61, 74.55%, 56.86%) is rgb8(0x3F, 0xE3, 0xAE); 0.502 is
+        // 0x80/255 — the same fixture and alpha byte this test used
+        // while ARGB still existed, spelled in the notation left.
         let mut p = Picker::of(Color::WHITE);
-        p.format = Format::Argb;
-        assert!(p.set_text("#803FE3AE"));
+        assert!(p.set_text("hsl(160.61, 74.55%, 56.86% / 0.502)"));
         let lit = theme::edit::oklch_literal(p.oklch());
         assert!(
             lit.contains(" / 0.502"),
             "the alpha must cross into the theme's own spelling: {lit}"
         );
         let mut q = Picker::of(Color::WHITE);
-        q.format = Format::Argb;
-        assert!(q.set_text("#FF3FE3AE"));
+        assert!(q.set_text("hsl(160.61, 74.55%, 56.86%)"));
         let opaque = theme::edit::oklch_literal(q.oklch());
         assert!(!opaque.contains('/'), "an opaque colour writes no alpha: {opaque}");
         approx(p.oklch().l, q.oklch().l, 1e-4, "alpha must not move lightness");
@@ -1633,23 +1462,24 @@ mod tests {
             approx(back.c, first.c, 2e-3, &format!("chroma after trip {i}"));
             approx(back.h, first.h, 0.5, &format!("hue after trip {i}"));
         }
+        // The same claim through the picker's own TYPED road — HSL now,
+        // since OKLCh no longer has a notation of its own to type into.
         let mut q = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        q.format = Format::Oklch;
+        let first_l = q.oklch().l;
         for i in 0..20 {
             let s = q.text();
             assert!(q.set_text(&s), "trip {i} wrote a value it cannot read: {s}");
         }
-        approx(q.oklch().l, first.l, 3e-3, "lightness after twenty written trips");
+        approx(q.oklch().l, first_l, 3e-3, "lightness after twenty written trips");
     }
 
     #[test]
-    fn format_all_starts_on_hsv_and_rgb_alone_offers_three_sliders() {
-        assert_eq!(Format::ALL[0], Format::Hsv, "HSV leads the ring, this rewrite's default");
-        assert_eq!(Picker::of(Color::BLACK).format, Format::Hsv, "Picker::of seeds HSV");
-        assert_eq!(Picker::at_rest().format, Format::Hsv, "at_rest inherits Picker::of's seed");
+    fn format_all_starts_and_stays_on_hsl() {
+        assert_eq!(Format::ALL[0], Format::Hsl, "HSL is the one notation there is");
+        assert_eq!(Picker::of(Color::BLACK).format, Format::Hsl, "Picker::of seeds HSL");
+        assert_eq!(Picker::at_rest().format, Format::Hsl, "at_rest inherits Picker::of's seed");
         for f in Format::ALL {
-            let want = if f == Format::Rgb { 3 } else { MAX_SLIDERS };
-            assert_eq!(f.slider_count(), want, "{f:?} offers the wrong slider count");
+            assert_eq!(f.slider_count(), MAX_SLIDERS, "{f:?} offers the wrong slider count");
         }
     }
 
@@ -1678,7 +1508,7 @@ mod tests {
         // through `pick_slider` and `Picker::hue` rather than through
         // `wheel_pick`, which is gone with the wheel.
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        p.format = Format::Hsv;
+        p.format = Format::Hsl;
         let hue = p.hue();
         p.pick_slider(1, 0.0); // saturation to nothing
         assert_eq!(p.colour().r, p.colour().b, "zero saturation is grey");
@@ -1696,106 +1526,205 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_onto_either_lightness_extreme_keeps_the_saturation_it_came_from() {
+        //! Found LIVE, after this file already shipped: dragging
+        //! Lightness to 0 % or 100 % snapped the Saturation slider to
+        //! 0 % — `hsv_from_hsl` answers saturation 0 at EITHER extreme
+        //! regardless of what is asked for (black and white have none
+        //! to give, by construction), and a picker that re-derived HSL
+        //! saturation from the colour every frame had nowhere else to
+        //! read it from. The exact hue-axis shape of the test above,
+        //! over the OTHER kept field ([`Picker::hsl_sat`]).
+        let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
+        let sat = p.hsl_sat();
+        assert!(sat > 0.1, "the fixture must start with real saturation: {sat}");
+
+        p.pick_slider(2, 0.0); // lightness to black
+        assert_eq!(p.colour(), Color::BLACK, "zero lightness is black");
+        approx(p.hsl_sat(), sat, 1e-6, "saturation stayed where the hand left it, at black");
+        approx(p.slider_at(1), sat, 1e-6, "the Saturation slider itself did not snap to 0%");
+
+        // AND IT SURVIVES A RE-SEED, the same road the hue test's own
+        // note names: the editor reads the theme back into its controls
+        // on every visit, and black read back in has no saturation to
+        // give.
+        let black = p.colour();
+        p.set_colour(black);
+        approx(p.hsl_sat(), sat, 1e-6, "a re-seed off black kept the saturation");
+
+        // Coming back off black, at the SAME saturation, returns the
+        // same colour the picker started from.
+        p.pick_slider(2, 0.5);
+        approx(p.hsl_sat(), sat, 1e-3, "saturation returned off the lightness extreme");
+        let (r, g, b) = hsl_to_rgb(p.hue(), sat, 0.5);
+        approx_color(p.colour(), Color { r, g, b, a: 1.0 }, 2e-3, "the original hue and saturation came back");
+
+        // The other extreme, white, the identical claim.
+        p.pick_slider(2, 1.0);
+        assert_eq!(p.colour(), Color::WHITE, "full lightness is white");
+        approx(p.hsl_sat(), sat, 1e-6, "saturation stayed where the hand left it, at white");
+        approx(p.slider_at(1), sat, 1e-6, "the Saturation slider itself did not snap to 0%, at white");
+    }
+
+    #[test]
+    fn saturation_survives_a_theme_reseed_at_white_despite_oklch_round_trip_noise() {
+        //! Found LIVE a second time: `Picker::oklch`/`set_oklch` — the
+        //! exact crossing every theme save and reload goes through — do
+        //! not round-trip white back to bit-exact `(1, 1, 1)`; the OKLab
+        //! matrix and cube-root arithmetic leaves roughly 1e-7 of chroma
+        //! behind. An exact `l < 1.0` boundary on the resulting
+        //! `0.99999994` reads that residue as real information and wipes
+        //! the kept saturation the direct-drag test above already proves
+        //! survives — reproducing the SAME bug through a save/reload
+        //! instead of a drag. `LIGHTNESS_EXTREME_MARGIN` is the fix.
+        for base in [
+            Color::rgb8(0x80, 0x20, 0x20),
+            Color::rgb8(0x20, 0x80, 0x20),
+            Color::rgb8(0x20, 0x20, 0x80),
+            Color::rgb8(0xC0, 0x90, 0x30),
+        ] {
+            let mut p = Picker::of(base);
+            let sat = p.hsl_sat();
+            assert!(sat > 0.1, "the fixture must start with real saturation: {sat}");
+
+            p.pick_slider(2, 1.0); // white, through the real slider path
+            assert_eq!(p.colour(), Color::WHITE);
+            approx(p.hsl_sat(), sat, 1e-6, "the direct drag alone kept it");
+
+            // The exact crossing `Settings::seed_editor_from_theme` takes
+            // on every visit (module header): read the theme's own
+            // number back into the control.
+            let reseeded = p.oklch();
+            p.set_oklch(reseeded);
+            approx(p.hsl_sat(), sat, 1e-4, "a theme reseed at white must not wipe the saturation");
+
+            // And the colour it returns to off white is the ORIGINAL
+            // one, not a grey the noise quietly substituted for it.
+            p.pick_slider(2, 0.5);
+            let (r, g, b) = hsl_to_rgb(p.hue(), sat, 0.5);
+            approx_color(p.colour(), Color { r, g, b, a: 1.0 }, 5e-3, "the reseed did not turn the colour grey");
+        }
+    }
+
+    #[test]
+    fn the_value_plate_names_the_same_saturation_the_slider_shows_at_either_extreme() {
+        //! Found alongside the reseed bug above: [`write`] takes a plain
+        //! `Color` and has no kept state to read, so before this fix
+        //! `Picker::text` printed 0 % saturation at either lightness
+        //! extreme — the Saturation slider's own reading (`slider_at`)
+        //! disagreeing with the very value plate beside it, and with
+        //! `Part::Text`'s accessible value, which a screen reader reads
+        //! aloud, and with `begin_edit`'s own seed for the inline editor.
+        let mut p = Picker::of(Color::rgb8(0x80, 0x20, 0x20));
+        let sat_pct = format!("{:.2}", p.hsl_sat() * 100.0);
+        for l in [0.0f32, 1.0] {
+            p.pick_slider(2, l);
+            assert!(
+                p.text().contains(&sat_pct),
+                "the plate ({}) must name the same saturation the slider shows ({sat_pct}%) at l={l}",
+                p.text()
+            );
+        }
+    }
+
+    #[test]
+    fn a_hue_dragged_to_the_tracks_own_end_reads_back_as_the_tracks_own_end() {
+        //! `pick_slider(0, 1.0)` writes `360.0` verbatim (the module's
+        //! own doc on [`Picker::pick_slider`]: "CLAMPED, NEVER
+        //! REJECTED"). Reading it back with a plain `rem_euclid(360.0)`
+        //! answers `0.0` — correct for the COLOUR, since hue 0 and hue
+        //! 360 are the same point, but wrong for the HANDLE, which
+        //! teleported across the whole track the instant a press
+        //! reached its own right edge (2026-08-28's fix, `hue_frac`).
+        let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
+        p.pick_slider(0, 1.0);
+        approx(p.hue(), 360.0, 1e-6, "the stored hue is the literal 360");
+        approx(p.slider_at(0), 1.0, 1e-6, "the handle reads back at the track's own end");
+    }
+
+    #[test]
     fn slider_at_and_pick_slider_are_inverses_within_a_format() {
         //! `pick_slider` places a value, `slider_at` reads it back — a
         //! knob that drifted from the point a press landed on would be
-        //! lying about where it is standing, one drag at a time. Byte
-        //! notations round-trip to THEIR OWN RESOLUTION (a byte IS one),
-        //! and OKLCh is checked at small, safely in-gamut chroma so a
-        //! sRGB clip never enters what this test is measuring — see
-        //! `slider_stops`' own note on why OKLCh alone samples.
+        //! lying about where it is standing, one drag at a time.
+        //!
+        //! SLIDER 1 IS CHECKED TWICE, AND FOR A REASON: since `hsl_sat`
+        //! was added, `pick_slider(1, frac)` writes it directly and
+        //! `slider_at(1)` reads it directly, so comparing the two alone
+        //! is true by construction and would no longer notice a broken
+        //! `hsv_from_hsl` saturation axis (found in the fix's own
+        //! adversarial review, 2026-08-28). The second assertion re-reads
+        //! saturation independently, straight off the COLOUR the drag
+        //! actually produced, the same road every other slider here is
+        //! already checked by.
         let base = Color::rgb8(0x3F, 0xE3, 0xAE);
-        for (f, fracs) in [
-            (Format::Hsv, &[0.0f32, 0.1, 0.33, 0.5, 0.75, 0.999][..]),
-            (Format::Hsl, &[0.0f32, 0.1, 0.33, 0.5, 0.75, 0.999][..]),
-            (Format::Argb, &[0.0f32, 0.2, 0.5, 0.8, 1.0][..]),
-            (Format::Rgb, &[0.0f32, 0.2, 0.5, 0.8, 1.0][..]),
-            (Format::Dec, &[0.0f32, 0.2, 0.5, 0.8, 1.0][..]),
-        ] {
-            let eps = if matches!(f, Format::Hsv | Format::Hsl) { 1e-3 } else { 0.5 / 255.0 + 1e-4 };
-            for i in 0..f.slider_count() {
-                let mut p = Picker::of(base);
-                p.format = f;
-                for &frac in fracs {
-                    p.pick_slider(i, frac);
-                    approx(p.slider_at(i), frac, eps, &format!("{f:?} slider {i} at frac {frac}"));
+        let fracs = [0.0f32, 0.1, 0.33, 0.5, 0.75, 0.999];
+        for i in 0..Format::Hsl.slider_count() {
+            let mut p = Picker::of(base);
+            for &frac in &fracs {
+                p.pick_slider(i, frac);
+                approx(p.slider_at(i), frac, 1e-3, &format!("HSL slider {i} at frac {frac}"));
+                if i == 1 {
+                    let c = p.colour();
+                    let (_, real_s, _) = rgb_to_hsl(c.r, c.g, c.b);
+                    approx(real_s, frac, 1e-3, &format!("HSL slider 1's own colour at frac {frac}"));
                 }
             }
-        }
-        // OKLCh, at small chroma so nothing clips.
-        let mut p = Picker::of(base);
-        p.format = Format::Oklch;
-        for &frac in &[0.2f32, 0.5, 0.8] {
-            p.pick_slider(0, frac);
-            approx(p.slider_at(0), frac, 3e-3, "oklch L");
-        }
-        for &frac in &[0.0f32, 0.1, 0.25] {
-            p.pick_slider(1, frac);
-            approx(p.slider_at(1), frac, 3e-3, "oklch C (small, in-gamut)");
-        }
-        for &frac in &[0.0f32, 0.2, 0.6, 0.9] {
-            p.pick_slider(2, frac);
-            approx(p.slider_at(2), frac, 3e-3, "oklch H");
-        }
-        for &frac in &[0.0f32, 0.4, 1.0] {
-            p.pick_slider(3, frac);
-            approx(p.slider_at(3), frac, 1e-6, "oklch A");
         }
     }
 
     #[test]
     fn the_hue_slider_is_exact_at_every_sixty_degree_kink() {
-        for &s in &[0.2f32, 0.6, 1.0] {
-            for &v in &[0.3f32, 0.7, 1.0] {
-                let mut p = Picker::of(Color::BLACK);
-                p.format = Format::Hsv;
-                p.hsv = [0.0, s, v];
-                let stops = slider_stops(&p, 0);
-                assert_eq!(stops.len(), 7, "six kinks, seven stops");
-                for (k, (t, c)) in stops.iter().enumerate() {
-                    let h = k as f32 * 60.0;
-                    approx(*t, h / 360.0, 1e-6, "stop position");
-                    let (r, g, b) = hsv_to_rgb(h, s, v);
-                    approx_color(*c, Color { r, g, b, a: 1.0 }, 1e-5, &format!("kink {k}"));
-                }
+        // Four saturated, non-grey fixtures, spanning different levels of
+        // HSL saturation and lightness: `rgb_to_hsl` on each hands
+        // `slider_stops` a distinct (s, l) to hold fixed across the sweep.
+        for base in [
+            Color::rgb8(0x80, 0x40, 0x40),
+            Color::rgb8(0xE0, 0x60, 0x20),
+            Color::rgb8(0x30, 0x90, 0x30),
+            Color::rgb8(0xC0, 0xC0, 0x80),
+        ] {
+            let p = Picker::of(base);
+            let c = p.colour();
+            let (_, s_l, l) = rgb_to_hsl(c.r, c.g, c.b);
+            let stops = slider_stops(&p, 0);
+            assert_eq!(stops.len(), 7, "six kinks, seven stops");
+            for (k, (t, col)) in stops.iter().enumerate() {
+                let h = k as f32 * 60.0;
+                approx(*t, h / 360.0, 1e-6, "stop position");
+                let (r, g, b) = hsl_to_rgb(h, s_l, l);
+                approx_color(*col, Color { r, g, b, a: 1.0 }, 1e-5, &format!("kink {k}"));
             }
         }
     }
 
     #[test]
-    fn the_saturation_and_value_sliders_are_the_lines_the_header_states() {
+    fn the_saturation_and_lightness_sliders_are_the_lines_the_header_states() {
+        //! The state is reached through `pick_slider` itself — hue, then
+        //! lightness, then saturation, in that order — rather than by
+        //! poking `hsv` directly (the old HSV version of this test's own
+        //! trick): HSL is not the identity mapping onto the canonical
+        //! state the way HSV is, so a raw `hsv` write would set HSV
+        //! coordinates, not the HSL ones this test means to ask for.
         for &h in &[0.0f32, 95.0, 210.0, 359.0] {
             for &s in &[0.0f32, 0.35, 1.0] {
-                for &v in &[0.0f32, 0.5, 1.0] {
+                for &l in &[0.1f32, 0.5, 0.9] {
                     let mut p = Picker::of(Color::BLACK);
-                    p.format = Format::Hsv;
-                    p.hsv = [h, s, v];
+                    p.pick_slider(0, h / 360.0);
+                    p.pick_slider(2, l);
+                    p.pick_slider(1, s);
                     let sat = slider_stops(&p, 1);
-                    let (r, g, b) = hsv_to_rgb(h, 0.0, v);
-                    approx_color(sat[0].1, Color { r, g, b, a: 1.0 }, 1e-5, "s=0");
-                    let (r, g, b) = hsv_to_rgb(h, 1.0, v);
-                    approx_color(sat[1].1, Color { r, g, b, a: 1.0 }, 1e-5, "s=1");
-                    let val = slider_stops(&p, 2);
-                    approx_color(val[0].1, Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, 1e-6, "v=0 is black");
-                    let (r, g, b) = hsv_to_rgb(h, s, 1.0);
-                    approx_color(val[1].1, Color { r, g, b, a: 1.0 }, 1e-5, "v=1");
+                    let (r, g, b) = hsl_to_rgb(h, 0.0, l);
+                    approx_color(sat[0].1, Color { r, g, b, a: 1.0 }, 1e-3, "s=0");
+                    let (r, g, b) = hsl_to_rgb(h, 1.0, l);
+                    approx_color(sat[1].1, Color { r, g, b, a: 1.0 }, 1e-3, "s=1");
+                    let light = slider_stops(&p, 2);
+                    assert_eq!(light.len(), 3, "lightness has a kink at 0.5, three stops");
+                    approx_color(light[0].1, Color::BLACK, 1e-6, "l=0 is black");
+                    approx_color(light[2].1, Color::WHITE, 1e-6, "l=1 is white");
+                    let (r, g, b) = hsl_to_rgb(h, s, 0.5);
+                    approx_color(light[1].1, Color { r, g, b, a: 1.0 }, 1e-3, "l=0.5 is the kink");
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn byte_sliders_are_exact_on_two_stops() {
-        let base = Color::rgba8(0x3F, 0xE3, 0xAE, 0xCC);
-        for f in [Format::Argb, Format::Rgb, Format::Dec] {
-            let mut p = Picker::of(base);
-            p.format = f;
-            for i in 0..f.slider_count() {
-                let stops = slider_stops(&p, i);
-                assert_eq!(stops.len(), 2, "{f:?} slider {i} is two stops");
-                let ch = byte_channel(f, i);
-                approx_color(stops[0].1, with_channel(p.colour(), ch, 0.0), 1e-6, "lo stop");
-                approx_color(stops[1].1, with_channel(p.colour(), ch, 1.0), 1e-6, "hi stop");
             }
         }
     }
@@ -1813,7 +1742,7 @@ mod tests {
                 .cmds()
                 .iter()
                 .filter_map(|c| match c {
-                    DrawCmd::RectGrad { stops, .. } => Some(stops.clone()),
+                    DrawCmd::RectGradShape { stops, .. } => Some(stops.clone()),
                     _ => None,
                 })
                 .collect();
@@ -1836,8 +1765,8 @@ mod tests {
         let m = Metrics::read();
         for w in [520.0f32, 260.0, 100.0] {
             for custom in [0usize, 5] {
-                let a = layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), 3, custom).1;
-                let b = layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), 4, custom).1;
+                let a = layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), 2, custom).1;
+                let b = layout_with(&m, Rect::new(0.0, 0.0, w, 0.0), MAX_SLIDERS, custom).1;
                 approx(a, b, 1e-4, &format!("height at w={w} custom={custom}"));
             }
         }
@@ -1888,6 +1817,73 @@ mod tests {
                         0.51,
                         &format!("the reported height covers every part at width {w}"),
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_press_anywhere_on_the_drawn_handle_reaches_the_extreme_it_stands_on() {
+        //! `draw`'s handle used to be painted `handle_radius()` past
+        //! `l.sliders[i]`'s own edges at either extreme — the exact
+        //! rect [`hit`]/[`parts`] register — so a press on the outer
+        //! half of the visible knob at 0% or 100% landed on nothing
+        //! (2026-08-28's fix). `slider_frac` is the inverse of the SAME
+        //! inset `draw` now paints the handle through, so a press
+        //! anywhere inside the registered rect — including its own bare
+        //! edges, which is where the knob's outer half now actually
+        //! sits — must clamp to the extreme the handle is drawn at, not
+        //! fall short of it.
+        let r = Rect::new(100.0, 0.0, 300.0, 20.0);
+        approx(slider_frac(r, r.x), 0.0, 1e-6, "the track's own left edge is 0%");
+        approx(slider_frac(r, r.right()), 1.0, 1e-6, "the track's own right edge is 100%");
+        approx(slider_frac(r, r.x - 50.0), 0.0, 1e-6, "past the left edge still clamps to 0%");
+        approx(slider_frac(r, r.right() + 50.0), 1.0, 1e-6, "past the right edge still clamps to 100%");
+        approx(slider_frac(r, r.x + r.w / 2.0), 0.5, 1e-6, "the midpoint is untouched by the inset");
+    }
+
+    #[test]
+    fn the_handle_never_draws_past_the_track_that_is_hit_tested_for_it() {
+        //! The structural claim behind the fix above, checked against
+        //! the real paint: at every extreme, the handle's own outer
+        //! edge — `kx ± handle_radius()` — must land ON `l.sliders[i]`'s
+        //! edge, never beyond it, since that rect is exactly what
+        //! `parts`/`hit` register as pressable.
+        let mut fonts = FontSystem::new();
+        let mut p = Picker::of(Color::rgb8(0xFF, 0x00, 0x00)); // full-scale hue and lightness-adjacent
+        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), p.slider_count(), 0);
+        let hr = handle_radius();
+        for i in 0..l.sliders.len() {
+            let r = l.sliders[i];
+            for frac in [0.0f32, 1.0] {
+                p.pick_slider(i, frac);
+                let mut dl = DrawList::recording();
+                draw(&mut probe(&mut dl, &mut fonts), &l, &mut p, &[], FocusId::of("test"));
+                let handles: Vec<[f32; 4]> = dl
+                    .cmds()
+                    .iter()
+                    .filter_map(|c| match c {
+                        DrawCmd::Ring { r: hr_rect, .. }
+                            if (hr_rect[1] - r.y).abs() < 1e-3
+                                && (hr_rect[3] - r.h).abs() < 1e-3
+                                && hr_rect[2] < r.w
+                                && hr_rect[0] >= r.x - hr - 1.0
+                                && hr_rect[0] + hr_rect[2] <= r.right() + hr + 1.0 =>
+                        {
+                            Some(*hr_rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let (hx, hw) = handles
+                    .last()
+                    .map(|h| (h[0], h[2]))
+                    .unwrap_or_else(|| panic!("slider {i} painted no handle at frac {frac}"));
+                approx(hw, hr * 2.0, 0.5, &format!("slider {i} handle width at frac {frac}"));
+                if frac == 0.0 {
+                    approx(hx, r.x, 0.5, &format!("slider {i} handle's left edge at frac 0"));
+                } else {
+                    approx(hx + hw, r.right(), 0.5, &format!("slider {i} handle's right edge at frac 1"));
                 }
             }
         }
@@ -1986,22 +1982,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unpainted_rgb_fourth_slot_registers_nothing() {
-        //! `offered`'s own precedent, restated for the bank: RGB has
-        //! three channels and the fourth of `MAX_SLIDERS` is simply not
-        //! populated — no `Part`, no rect, nothing `hit` or the focus
-        //! chain can find, the same "a part that is drawn is a part that
-        //! can be reached, and the other way round" rule `offered` fixed
-        //! the ghost cell with.
-        let l = layout(Rect::new(0.0, 0.0, 520.0, 0.0), Format::Rgb.slider_count(), 0);
-        assert_eq!(l.sliders.len(), 3, "RGB lays three sliders and no ghost fourth");
-        assert!(
-            parts(&l).iter().all(|(p, _)| *p != Part::Slider(3)),
-            "no Part::Slider(3) exists for a three-slider layout"
-        );
-    }
-
-    #[test]
     fn the_ready_made_colours_come_from_the_theme() {
         let base = base_colours();
         assert!(!base.is_empty(), "the master declares a grid");
@@ -2046,14 +2026,13 @@ mod tests {
     #[test]
     fn begin_edit_seeds_from_the_plate_and_commit_reads_it_back() {
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        p.format = Format::Argb;
         assert!(!p.is_editing());
         p.begin_edit();
         assert!(p.is_editing());
         let seeded = p.text();
         assert_eq!(p.editing_mut().unwrap().value(), seeded);
-        // Type a new, valid value over the seeded one.
-        p.editing_mut().unwrap().set_value("#FF00FF00");
+        // Type a new, valid value over the seeded one — pure green.
+        p.editing_mut().unwrap().set_value("hsl(120, 100%, 50%)");
         assert!(p.commit_edit(), "a good value must commit");
         assert!(!p.is_editing(), "commit closes the editor on success");
         assert_eq!((q8(p.colour().r), q8(p.colour().g), q8(p.colour().b)), (0x00, 0xFF, 0x00));
@@ -2062,7 +2041,6 @@ mod tests {
     #[test]
     fn commit_edit_on_a_bad_parse_stays_open_and_keeps_the_colour() {
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        p.format = Format::Argb;
         let before = p.colour();
         p.begin_edit();
         p.editing_mut().unwrap().set_value("not a colour");
@@ -2075,10 +2053,9 @@ mod tests {
     #[test]
     fn cancel_edit_discards_the_typed_text() {
         let mut p = Picker::of(Color::rgb8(0x3F, 0xE3, 0xAE));
-        p.format = Format::Argb;
         let before = p.colour();
         p.begin_edit();
-        p.editing_mut().unwrap().set_value("#000000");
+        p.editing_mut().unwrap().set_value("hsl(0, 0%, 0%)");
         p.cancel_edit();
         assert!(!p.is_editing());
         assert_eq!(p.colour(), before, "cancel never touched the colour");
@@ -2145,13 +2122,12 @@ mod tests {
         }
         let name_of =
             |want: Part| by_part.iter().find(|(part, _)| *part == want).unwrap().1.name.clone();
-        // HSV is the default notation (`Picker::of`), so the bank's four
-        // sliders are hue, saturation, value, alpha in that order —
+        // HSL is the one notation there is, so the bank's three sliders
+        // are hue, saturation, lightness in that order —
         // `Format::slider_label`'s own order.
         assert_eq!(name_of(Part::Slider(0)), "Hue");
         assert_eq!(name_of(Part::Slider(1)), "Saturation");
-        assert_eq!(name_of(Part::Slider(2)), "Value");
-        assert_eq!(name_of(Part::Slider(3)), "Alpha");
+        assert_eq!(name_of(Part::Slider(2)), "Lightness");
         assert_eq!(name_of(Part::Format), "Colour notation");
         assert_eq!(name_of(Part::Text), format!("{} value", p.format.word()));
         assert_eq!(name_of(Part::Base(0)), "Preset colour");
@@ -2211,12 +2187,11 @@ mod tests {
         assert_eq!(value_of(Part::Format), p.format.word());
         assert_eq!(value_of(Part::Text), p.text());
         // The swatches' readings are the colour itself, RGBA and not
-        // RGB: a swatch can carry alpha (`swatch`'s own chequerboard is
-        // why) and a notation that dropped the byte would misreport a
-        // transparent cell as opaque.
-        assert_eq!(value_of(Part::Base(0)), write(base_colours()[0], Format::Argb));
-        assert_eq!(value_of(Part::Custom(1)), write(custom[1], Format::Argb));
-        assert_eq!(value_of(Part::Add), write(p.colour(), Format::Argb));
+        // HSL: a swatch can carry alpha (`swatch`'s own chequerboard is
+        // why) and the readout carries it too.
+        assert_eq!(value_of(Part::Base(0)), write(base_colours()[0], Format::Hsl));
+        assert_eq!(value_of(Part::Custom(1)), write(custom[1], Format::Hsl));
+        assert_eq!(value_of(Part::Add), write(p.colour(), Format::Hsl));
         // And the grid cells carry their place in the set
         // (`AccessInfo::index`'s own doc: a tab's `(2, 5)` among five).
         assert_eq!(index_of(Part::Base(0)), Some((1, base_colours().len() as u32)));
