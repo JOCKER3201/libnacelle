@@ -8,6 +8,10 @@
 //! * [`sdf`] — the CPU reference of the vector core's distance field:
 //!   the formulas the renderer's `fs_shape` computes, provable without
 //!   a GPU.
+//! * [`shaders`] — precompiled SPIR-V border-effect shaders (the
+//!   `nacelle-shaders` crate), re-exported here so a downstream crate
+//!   reaches `nacelle::shaders::BORDER_EFFECTS` without its own
+//!   dependency on it.
 //! * [`icon`] — SVG icons, rasterized once into a coverage mask and
 //!   packed into [`font::FontSystem`]'s shared atlas beside the glyphs
 //!   — not a distance field per icon (K8).
@@ -81,6 +85,7 @@ pub mod pointer;
 pub mod runtime;
 pub mod script;
 pub mod sdf;
+pub use nacelle_shaders as shaders;
 pub mod settings;
 pub mod sound;
 pub mod stage;

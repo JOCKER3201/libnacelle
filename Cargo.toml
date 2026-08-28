@@ -84,6 +84,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Verdict: CLEAR at 0.45.1, default-features = false.
 resvg = { version = "=0.45.1", default-features = false }
 
+# Precompiled SPIR-V border-effect shaders. Re-exported at the crate root
+# as `nacelle::shaders` (see lib.rs) so libnacelle is compiled together
+# with its effects rather than an application wiring a second dependency
+# on its own. Own repo because WGSL/SPIR-V authoring is a different craft
+# from the rest of this crate, not because it needs to move independently.
+nacelle-shaders = { git = "https://github.com/JOCKER3201/nacelle-shaders" }
+
 [dev-dependencies]
 # The derive is only ever used by tests here — the toolkit deserialises
 # nothing of its own, it hands `settings::load` an addon's type. Keeping
