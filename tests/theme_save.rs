@@ -38,9 +38,9 @@ fn a_saved_theme_loads_back_with_the_values_it_was_saved_with() {
         edit("elev.panel.glass.rank", "2.50"),
         edit("elev.panel.glass.tint", "oklch(0.7000, 0.1000, 200.00)"),
         edit("elev.panel.glass.wash", "oklch(0.0000, 0.0000, 0.00 / 0.000)"),
-        edit("glow.panel_edge.enabled", "true"),
-        edit("glow.panel_edge.radius", "1.6u"),
-        edit("glow.panel_edge.alpha", "0.34"),
+        edit("glow.focus_ring.enabled", "true"),
+        edit("glow.focus_ring.radius", "1.6u"),
+        edit("glow.focus_ring.alpha", "0.34"),
         edit("component.panel.fill", "oklch(0.3000, 0.0500, 120.00)"),
         // 2026-08-16, the whole-theme groups: one witness per group, and
         // the shapes the first list did not have — a bare enum word
@@ -92,16 +92,16 @@ fn a_saved_theme_loads_back_with_the_values_it_was_saved_with() {
         "the fractional rank did not survive the trip: {}",
         px("elev.panel.glass.rank")
     );
-    assert!(flag("glow.panel_edge.enabled"), "the flag did not survive the trip");
+    assert!(flag("glow.focus_ring.enabled"), "the flag did not survive the trip");
     assert!(
-        px("glow.panel_edge.radius") > 1.0,
+        px("glow.focus_ring.radius") > 1.0,
         "the unit length baked to nothing: {}",
-        px("glow.panel_edge.radius")
+        px("glow.focus_ring.radius")
     );
     assert!(
-        (px("glow.panel_edge.alpha") - 0.34).abs() < 0.01,
+        (px("glow.focus_ring.alpha") - 0.34).abs() < 0.01,
         "the plain scalar drifted: {}",
-        px("glow.panel_edge.alpha")
+        px("glow.focus_ring.alpha")
     );
     assert!(
         col("elev.panel.glass.wash").a < 0.01,

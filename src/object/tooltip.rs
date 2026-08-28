@@ -431,9 +431,9 @@ mod tests {
     /// vertex for vertex.
     ///
     /// Conditional, and deliberately so, on what the master ships:
-    /// `elev.popover.glass.rank = 0` and `glow.panel_edge.enabled =
-    /// false`. A theme that raises either is MEANT to move the tooltip —
-    /// that it now can is the whole of what joining bought.
+    /// `elev.popover.glass.rank = 0`. A theme that raises it is MEANT to
+    /// move the tooltip — that it now can is the whole of what joining
+    /// bought.
     #[test]
     fn joining_the_ladder_moved_no_pixel() {
         use crate::draw::DrawList;

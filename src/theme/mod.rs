@@ -1444,7 +1444,7 @@ const SAVE_TEMP_SUFFIX: &str = ".theme.part";
 /// mention everything that must survive — is what this function used to do,
 /// and it is the whole of the owner's report on 2026-08-17: "the halo does
 /// not blink any more, but it disappears when I press save". `edit.rs`
-/// deliberately WITHHOLDS `glow.panel_edge.radius`/`.alpha` from a theme
+/// deliberately WITHHELD the halo's `radius`/`alpha` from a theme
 /// that dressed its own halo, so that the editor's seeds do not flatten the
 /// author's numbers. Laid over a bake that is a keep; written into a
 /// regenerated file it was a delete, and the halo went out. One edit set

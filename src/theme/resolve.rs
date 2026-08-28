@@ -428,9 +428,9 @@ impl expr::Env for Resolver<'_> {
             }
         }
         // A reference may name a GROUP rather than a value: `@grad.spectrum` is
-        // "the gradient called spectrum", `@glow.panel_edge` "the glow class
-        // called panel_edge". The group's members are declared
-        // (`grad.spectrum.stops`, `glow.panel_edge.radius`), the bare name is
+        // "the gradient called spectrum", `@glow.focus_ring` "the glow class
+        // called focus_ring". The group's members are declared
+        // (`grad.spectrum.stops`, `glow.focus_ring.radius`), the bare name is
         // not, and the consumer looks the group up by name at draw time. So a
         // prefix with declared children resolves to the name itself — a handle,
         // not a colour — and only a prefix with nothing under it is unknown.

@@ -868,9 +868,9 @@ mod tests {
     /// copy it replaced draw the same commands over the same vertices.
     ///
     /// It also pins what "no change" is CONDITIONAL on — the master's
-    /// `elev.popover.glass.rank = 0` and `glow.panel_edge.enabled =
-    /// false`. Neither is a fallback in Rust: raise either in a theme and
-    /// the menu is meant to move, which is the point of joining.
+    /// `elev.popover.glass.rank = 0`. Not a fallback in Rust: raise it in
+    /// a theme and the menu is meant to move, which is the point of
+    /// joining.
     #[test]
     fn joining_the_ladder_moved_no_pixel() {
         use crate::draw::DrawList;

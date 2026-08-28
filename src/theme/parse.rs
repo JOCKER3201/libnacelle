@@ -1722,8 +1722,8 @@ strength = 0.55
 [mood.alert]
 motion.alarm_blink.enabled = true
 component.alarm_bar.fill   = alpha(@severity.critical.text, 0.18)
-glow.panel_edge.enabled    = true
-glow.panel_edge.radius     = 1.4u
+glow.focus_ring.enabled    = true
+glow.focus_ring.radius     = 1.4u
 wash = #FF2A35 / 0.22
 "#;
         let (doc, d, src) = parse_str(text);

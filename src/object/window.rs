@@ -8,9 +8,8 @@
 //! theme files.
 
 use crate::access::{AccessInfo, Role};
-use crate::draw::{Corner, CornerStyle, DrawList};
+use crate::draw::{Corner, CornerStyle};
 use crate::focus::FocusId;
-use crate::font::FontSystem;
 use crate::theme::{self, Color, TokenId};
 use crate::{Ctx, Rect};
 use std::sync::OnceLock;
@@ -96,304 +95,6 @@ pub(crate) fn corner_segments(
     size: f32,
 ) -> u8 {
     crate::corner::segments(t, cell, size)
-}
-
-/// The seven token ids one `[glow]` class needs before its light can be a
-/// LIT TUBE rather than a soft halo.
-///
-/// Ids and not names, so a class memoises its own and calls the same
-/// reader; the reader ([`tube_dress`]) knows nothing about panels.
-///
-/// TO ADD A CONSUMER — the owner's "first the frame of the whole object,
-/// the rest later", written down so the rest is a recipe and not a
-/// rediscovery:
-///
-/// 1. in the master, add `tube` to that class's `falloff` `enum:` list
-///    and declare `<class>.tube_decay`, `<class>.tube_aura`,
-///    `<class>.tube_aura_reach`, `<class>.tube_bands` and
-///    `<class>.tube_cutoff` beside it. The class already declares
-///    `boost` — all fifteen do.
-/// 2. build a `TubeKeys` from the seven ids in a `OnceLock` of its own,
-///    beside the ids that class already memoises.
-/// 3. where the class strokes its ring, ask [`tube_dress`]; on `Some`,
-///    stroke [`Tube::core`] over the ring at the ring's own width and
-///    hand [`Tube::profile`] to `DrawList::glow_ring_with` instead of
-///    calling `glow_ring`.
-///
-/// That is the whole of it: no drawing code moves, because there is none
-/// outside this file and `draw.rs`'s one emitter. What a consumer must
-/// bring is two things:
-///
-/// * a WIDTH — a tube's core is the stroke it is made of, so a glow whose
-///   caller has no stroke (a text bloom, say) has no core to burn and
-///   should keep asking for a halo;
-/// * a MASK BAND. `glow_ring_with` re-maps the soft disk's own profile,
-///   and with no band to sample it falls back to the maskless shell,
-///   which draws the halo's shape and DROPS the profile silently. Every
-///   consumer that passes `FontSystem::mask_soft_uv()` is safe by
-///   construction; one that computes a band of its own must check it.
-pub(crate) struct TubeKeys {
-    falloff: TokenId,
-    boost: TokenId,
-    decay: TokenId,
-    aura: TokenId,
-    aura_reach: TokenId,
-    bands: TokenId,
-    cutoff: TokenId,
-    core_sat: TokenId,
-}
-
-/// One class's tube, dressed — the light's shape and the drive on its core.
-pub(crate) struct Tube {
-    profile: crate::draw::GlowProfile,
-    boost: f32,
-    core_sat: f32,
-}
-
-impl Tube {
-    /// The core of the tube, given the colour of the glass.
-    ///
-    /// THE STATED COLOUR, NOT A DRIVEN ONE (2026-08-25, the owner's own
-    /// number: "efekt na samym borderze ma być o wartości s = 70.00 w
-    /// zapisie hsv"). The core keeps the glass's HUE, wears the theme's
-    /// `tube_core_sat` as its HSV saturation, and burns at full HSV
-    /// value — the brightest point of the whole effect, stated as a
-    /// colour rather than reached by clipping. Before this the core was
-    /// the edge multiplied by `boost` and clipped per channel, which
-    /// made "how white" a function of the edge's own lightness: a dim
-    /// theme's core barely paled while a bright one's blew to pure
-    /// white, and no token could say where between the two it landed.
-    /// Saturation is that word. `boost` still rides the [`Tube`] — its
-    /// token is declared, read and clamped exactly as before — but the
-    /// core no longer consumes it; see `glow.panel_edge.boost`'s own
-    /// doc for its standing.
-    ///
-    /// Alpha is the edge's, untouched. The saturation is on the LIGHT;
-    /// coverage is a different question and the tube covers exactly
-    /// what the border covered.
-    fn core(&self, edge: Color) -> Color {
-        let (h, _, _) = super::color_picker::rgb_to_hsv(edge.r, edge.g, edge.b);
-        let (r, g, b) = super::color_picker::hsv_to_rgb(h, self.core_sat, 1.0);
-        Color { r, g, b, a: edge.a }
-    }
-}
-
-/// The tube dress of one glow class, or `None` when its `falloff` names
-/// any other profile.
-///
-/// The ONE place the word `tube` becomes a picture. `word` memoises the
-/// word's index in that token's own vocabulary, which is the only
-/// meaningful form of an enum value (`theme::enum_index`); a master with
-/// no `tube` in the list answers `None` and the class keeps its halo,
-/// which is what a theme engine loaded against an older master must do.
-pub(crate) fn tube_dress(
-    t: &theme::ResolvedTheme,
-    k: &TubeKeys,
-    word: &'static OnceLock<Option<u16>>,
-) -> Option<Tube> {
-    let tube = *word.get_or_init(|| theme::enum_index(k.falloff, "tube"));
-    if Some(t.enum_of(k.falloff)) != tube {
-        return None;
-    }
-    Some(Tube {
-        // Clamped at the ends the master documents, and clamped here
-        // rather than trusted, because a theme file is a user file. The
-        // clamps are the token's declared range and no more: a decay
-        // below 1 would spread the light WIDER than the halo it is a
-        // sharpening of, an aura below 1 would dim the glass it is a
-        // saturation of, a reach or a cutoff outside 0..1 is not a
-        // fraction, and a band count is a number of ring strokes this
-        // process has to emit — the one clamp of the six that is about
-        // the machine rather than the picture, which is why its ceiling
-        // is `GlowProfile::MAX_BANDS` and not a number spelt here.
-        profile: crate::draw::GlowProfile {
-            decay: t.px(k.decay).max(1.0),
-            aura: t.px(k.aura).max(1.0),
-            aura_reach: t.px(k.aura_reach).clamp(0.0, 1.0),
-            bands: t.px(k.bands).clamp(1.0, crate::draw::GlowProfile::MAX_BANDS as f32) as u32,
-            cutoff: t.px(k.cutoff).clamp(0.0, 1.0),
-        },
-        boost: t.px(k.boost).max(1.0),
-        core_sat: t.px(k.core_sat).clamp(0.0, 1.0),
-    })
-}
-
-/// The panel-edge light — `[glow] panel_edge`, family A's signature.
-///
-/// Every frame that strokes a panel-class ring calls this right after the
-/// stroke, with the ring's own colour and width: an additive soft-sprite
-/// ring at the theme's radius, tinted with the edge's own resolved colour
-/// (the `element` rule — no variant theme names a different tint) at
-/// `panel_edge.alpha`, scaled by the one global knob `glow.alpha_scale`.
-/// Default ships it off; a theme opts in, and a raw master draws nothing
-/// because a missing flag reads false.
-///
-/// TWO PROFILES, ONE CALL. `panel_edge.falloff` decides which:
-///
-/// * anything but `tube` — the soft halo this has always drawn, a blurred
-///   copy of the edge in the edge's own colour. The theme editor calls
-///   this kind GLOW.
-/// * `tube` — a lit glass tube. Its core is the border stroke re-laid in
-///   the colour the display shows when that colour is DRIVEN at
-///   `panel_edge.boost` (white, at enough drive, whatever the hue); its
-///   colour is carried by the saturated band `tube_aura` lays just
-///   outside the glass; and its light stops rather than fades, by
-///   `tube_decay`. The theme editor calls this kind NEON.
-///
-/// The tube's core is the BORDER and not a line of its own: a neon sign
-/// is a tube of glass with a current in it, and the width of that glass
-/// is the width the theme already stated at `edge.width`. That is why
-/// nothing here names a core thickness — there is no such decision to
-/// take, in this file or in a theme.
-///
-/// It is laid as a SECOND stroke over the caller's, rather than by the
-/// caller stroking the driven colour in the first place, and that is a
-/// choice with two costs and one reason. The reason: a tube must be
-/// drawable from ONE place, or every future consumer re-implements it
-/// (the recipe on [`TubeKeys`] would otherwise be four steps instead of
-/// three). The costs, both known and both small:
-///
-/// * A GRADIENT BORDER's core comes out flat. `elev::Level` strokes two
-///   colours along an axis when the theme asks; the drive has one colour
-///   to give back, because the halo over it has one too. A tube whose
-///   glass changes colour along its length is a real thing and a
-///   different task — it needs a driven gradient and a gradient halo,
-///   neither of which exists.
-/// * In the VECTOR lane the core is a second shape record over the
-///   border's own, which is R4's double edge-AA — one of the bounded,
-///   known costs `render.vector`'s master token comment names as shipped
-///   rather than blocking, as of K3d (2026-08-23). It costs nothing today
-///   and it is written down so it is not rediscovered.
-///
-/// A theme written before `tube` existed cannot reach any of it: the word
-/// is not in its falloff, so [`tube_dress`] answers `None` and the halo
-/// is drawn from the same four tokens it always was. `boost` in
-/// particular is read ONLY on the tube road, which is what lets the
-/// master state a real drive for a tube while every existing glow theme
-/// keeps its picture to the bit.
-///
-/// `now` is the caller's clock (`Ctx.t`) and it drives ONE thing:
-/// `motion.glow_pulse`, §5.22's breathing halo, whose `amplitude` key is
-/// documented as "± swing applied to glow_alpha" and had no reader
-/// anywhere. The swing is on the halo's ALPHA and nothing else — a
-/// breathing RADIUS is a different sprite every frame, and the master's
-/// own prohibition list has "anything that affects layout" for the same
-/// reason. `glow_pulse` ships disabled and so does `glow.panel_edge`, so
-/// the master's picture is what it was, and a theme has to ask twice
-/// before this costs a token read.
-///
-/// TWO KEYS THIS CLASS DECLARES AND NOBODY READS, LEFT THAT WAY ON
-/// PURPOSE. `panel_edge.mode` is a rendering TECHNIQUE (`shell` under
-/// 0.85u, `sprite` above) and not a shape: giving it a reader would
-/// change which emitter every existing glow theme lands on at small
-/// radii, which is a change to their picture and not to this task's.
-/// `panel_edge.color` is the halo's TINT, and its `element` rule already
-/// describes what the caller passes in — a reader for it belongs to the
-/// halo and the tube alike, would move the picture of any theme that
-/// wrote a literal there, and is its own task. Neither is a place a tube
-/// needed; neither was given a second token meaning the same thing.
-pub(crate) fn panel_edge_glow(
-    dl: &mut DrawList,
-    t: &theme::ResolvedTheme,
-    r: Rect,
-    c: &[Corner; 4],
-    segments: u8,
-    edge: Color,
-    width: f32,
-    now: f64,
-) {
-    static ON: OnceLock<TokenId> = OnceLock::new();
-    static RADIUS: OnceLock<TokenId> = OnceLock::new();
-    static ALPHA: OnceLock<TokenId> = OnceLock::new();
-    static SCALE: OnceLock<TokenId> = OnceLock::new();
-    static KEYS: OnceLock<TubeKeys> = OnceLock::new();
-    static TUBE_WORD: OnceLock<Option<u16>> = OnceLock::new();
-    if !t.flag(tok(&ON, "glow.panel_edge.enabled")) {
-        return;
-    }
-    let radius = t.px(tok(&RADIUS, "glow.panel_edge.radius")).max(0.0);
-    let alpha = (t.px(tok(&ALPHA, "glow.panel_edge.alpha"))
-        * t.px(tok(&SCALE, "glow.alpha_scale")))
-    .clamp(0.0, 1.0);
-    if radius <= 0.0 || alpha <= 0.0 {
-        return;
-    }
-    // The breath, applied last so the theme's own number is the one it
-    // swings about. A frozen pulse — off, no amplitude, or reduced motion
-    // — answers exactly 1.0, and `alpha * 1.0` is `alpha`.
-    let alpha =
-        (alpha * crate::motion::Effect::of("glow_pulse").cyclic_amplitude(now)).clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return;
-    }
-    let keys = KEYS.get_or_init(|| TubeKeys {
-        falloff: theme::id("glow.panel_edge.falloff").unwrap_or(TokenId::MISSING),
-        boost: theme::id("glow.panel_edge.boost").unwrap_or(TokenId::MISSING),
-        decay: theme::id("glow.panel_edge.tube_decay").unwrap_or(TokenId::MISSING),
-        aura: theme::id("glow.panel_edge.tube_aura").unwrap_or(TokenId::MISSING),
-        aura_reach: theme::id("glow.panel_edge.tube_aura_reach").unwrap_or(TokenId::MISSING),
-        bands: theme::id("glow.panel_edge.tube_bands").unwrap_or(TokenId::MISSING),
-        cutoff: theme::id("glow.panel_edge.tube_cutoff").unwrap_or(TokenId::MISSING),
-        core_sat: theme::id("glow.panel_edge.tube_core_sat").unwrap_or(TokenId::MISSING),
-    });
-    let profile = match tube_dress(t, keys, &TUBE_WORD) {
-        // The core FIRST, then the light over it: the burned stroke is
-        // opaque where the border was and the halo composes additively,
-        // so laying the halo first would put light under a cover and
-        // lose it. A width of zero is a caller with no stroke to burn —
-        // the tube then has no core, and says so by drawing none rather
-        // than by inventing a thickness.
-        Some(tube) => {
-            if width > 0.0 {
-                dl.ring(r, c, segments, width, tube.core(edge));
-            }
-            tube.profile
-        }
-        None => crate::draw::GlowProfile::HALO,
-    };
-    dl.glow_ring_with(
-        r,
-        c,
-        segments,
-        radius,
-        edge.alpha(alpha),
-        FontSystem::mask_soft_uv(),
-        profile,
-    );
-    // THE EFFECT HOLDS BOTH FACES OF THE BAND, AT THE SAME DISTANCE
-    // (2026-08-25, the owner's word: "efekt po obu stronach ma odstawać
-    // od borderu na taką samą odległość zawsze, niezależnie od tego
-    // jakiej grubości jest border"). The outward light above grows off
-    // the border's OUTER contour; this one grows off its INNER contour —
-    // the rect inset by the border's own width, wearing the same corners
-    // (`ring_verts`' equal-rounding rule) — so a border twice as thick
-    // moves both lights apart with its walls and neither light changes
-    // its own width. Until today the inward face grew off the OUTER
-    // contour too, spending its first `width` px under the opaque band
-    // where the additive light could not be seen — which is exactly why
-    // a thick border read as a glow on one side only.
-    //
-    // BOTH effects wear both faces now, halo and tube alike: the old
-    // `!profile.is_halo()` gate predates the border/effect split — a
-    // GLOW border is the same constant band with a softer light, not a
-    // different object with fewer sides.
-    let r_in = Rect::new(
-        r.x + width,
-        r.y + width,
-        (r.w - 2.0 * width).max(0.0),
-        (r.h - 2.0 * width).max(0.0),
-    );
-    if r_in.w > 0.0 && r_in.h > 0.0 {
-        dl.glow_ring_inward_with(
-            r_in,
-            c,
-            segments,
-            radius,
-            edge.alpha(alpha),
-            FontSystem::mask_soft_uv(),
-            profile,
-        );
-    }
 }
 
 /// Dims everything behind a modal window.
@@ -511,6 +212,7 @@ pub fn frame(ctx: &mut Ctx, r: Rect) {
 mod tests {
     use super::*;
     use crate::draw::{DrawCmd, DrawList};
+    use crate::font::FontSystem;
     use crate::object::elev::tests::{same_picture, AT_REST};
 
     /// The box every proof below draws into. Any box would do — what is
@@ -522,20 +224,20 @@ mod tests {
 
     /// What this file drew before it joined the ladder: the body of the
     /// old `frame`, transcribed statement for statement — the glass
-    /// branch, the fill under it, the ring, and the bloom over the ring.
+    /// branch, the fill under it, and the ring.
     ///
     /// Its OWN transcript, and not the one `menu.rs` and `tooltip.rs`
     /// share ([`crate::object::elev::tests::the_private_copy`]), because
     /// a window's copy was never their copy. Theirs departed from the
     /// rung in TWO places — the body drawn whatever its alpha, the ring
-    /// drawn on the width alone — and a window's departed in FOUR: it
-    /// also stroked its ring whatever the EDGE's alpha, and it laid the
-    /// edge bloom unconditionally where the rung asks for a visible edge
-    /// first. Borrowing their transcript would have made this file's
-    /// no-move proof a proof about a picture it never drew, and would
-    /// have left the two extra departures — the two a theme that lights
-    /// `glow.panel_edge` can see — untested.
-    fn the_frames_private_copy(dl: &mut DrawList, t: &theme::ResolvedTheme, r: Rect, now: f64) {
+    /// drawn on the width alone — and a window's also stroked its ring
+    /// whatever the EDGE's alpha. Borrowing their transcript would have
+    /// made this file's no-move proof a proof about a picture it never
+    /// drew. (The edge bloom the transcript used to lay after the ring
+    /// is gone with the whole panel-edge effect, 2026-08-27, the owner's
+    /// order — from the transcript and from the ladder both, so the
+    /// comparison still reads picture against picture.)
+    fn the_frames_private_copy(dl: &mut DrawList, t: &theme::ResolvedTheme, r: Rect) {
         static SEG: OnceLock<TokenId> = OnceLock::new();
         let id = |n: &str| theme::id(n).unwrap_or(TokenId::MISSING);
         let fill = col(t.bed(id("component.panel.fill")));
@@ -556,7 +258,6 @@ mod tests {
             dl.ring_fill(r, &c, seg, fill);
         }
         dl.ring(r, &c, seg, width, line);
-        panel_edge_glow(dl, t, r, &c, seg, line, width, now);
     }
 
     /// The no-move proof, in the words `menu.rs` and `tooltip.rs` already
@@ -566,56 +267,39 @@ mod tests {
     /// and vertex for vertex.
     ///
     /// Under the master ALONE, which is half the claim and the weaker
-    /// half: the master leaves `elev.panel.glass.rank` at 0 and the base
-    /// `glow.panel_edge.enabled` at false, so two of the four things this
-    /// file used to do are not reached at all.
-    /// [`joining_the_ladder_moved_no_pixel_with_the_glass_and_the_glow_lit`]
-    /// is where they are.
+    /// half: the master leaves `elev.panel.glass.rank` at 0, so the glass
+    /// branch is not reached at all.
+    /// [`joining_the_ladder_moved_no_pixel_with_the_glass_lit`] is where
+    /// it is.
     #[test]
     fn joining_the_ladder_moved_no_pixel() {
         let t = theme::resolved();
         let mut was = DrawList::recording();
-        the_frames_private_copy(&mut was, t, box_(), AT_REST);
+        the_frames_private_copy(&mut was, t, box_());
         let mut now = DrawList::recording();
         level().draw_in(&mut now, t, box_(), box_(), AT_REST);
         same_picture(&was, &now);
     }
 
-    /// The same proof where the master cannot make it.
+    /// The same proof where the master cannot make it: the glass branch,
+    /// taken over a theme that raises the rung's glass rank, and the two
+    /// lists still have to agree.
     ///
-    /// Two of the frame's four departures from the rung are invisible
-    /// under a theme that ships the glass off and the bloom unlit, and
-    /// `[mood.alert]` — which the engine ships and a host may select at
-    /// any moment — lights the bloom. So the picture is taken again over
-    /// a theme that raises the rung's glass rank AND turns
-    /// `glow.panel_edge` on, and the two lists still have to agree: the
-    /// old ring-then-bloom pair and the rung's guarded one draw the same
-    /// thing whenever the edge is there to be drawn.
-    ///
-    /// Both commands are asserted present first, because two pictures
-    /// that agree by both being empty prove nothing.
+    /// The command is asserted present first, because two pictures that
+    /// agree by both being empty prove nothing.
     #[test]
-    fn joining_the_ladder_moved_no_pixel_with_the_glass_and_the_glow_lit() {
+    fn joining_the_ladder_moved_no_pixel_with_the_glass_lit() {
         let t = theme::bake_over_master(
             "[elev.panel]\n\
              glass.rank = 2\n\
-             glass.wash = #40FFC0 / 0.5\n\
-             [glow]\n\
-             panel_edge.enabled = true\n\
-             panel_edge.radius = 2.0u\n\
-             panel_edge.alpha = 0.6\n",
+             glass.wash = #40FFC0 / 0.5\n",
         );
         let mut was = DrawList::recording();
-        the_frames_private_copy(&mut was, &t, box_(), AT_REST);
+        the_frames_private_copy(&mut was, &t, box_());
         let has = |dl: &DrawList, what: fn(&DrawCmd) -> bool| dl.cmds().iter().any(what);
         assert!(
             has(&was, |c| matches!(c, DrawCmd::GlassFill { .. })),
             "the raised rank drew no glass, so this proves nothing: {:?}",
-            was.cmds()
-        );
-        assert!(
-            has(&was, |c| matches!(c, DrawCmd::GlowRing { .. })),
-            "the lit bloom drew nothing, so this proves nothing: {:?}",
             was.cmds()
         );
         let mut now = DrawList::recording();
@@ -644,10 +328,7 @@ mod tests {
         );
         let mut dl = DrawList::recording();
         level().draw_in(&mut dl, &t, box_(), box_(), AT_REST);
-        // Filtered to the GRADIENT ring specifically, and not `Ring` too:
-        // the master's own panel_edge ships lit since 2026-08-23, and a
-        // window now also burns a plain, solid-colour `Ring` core for its
-        // glow — a real second ring this test is not about.
+        // Filtered to the GRADIENT ring specifically.
         let rings: Vec<_> = dl
             .cmds()
             .iter()
@@ -785,572 +466,4 @@ mod tests {
         same_picture(&wired, &bare);
     }
 
-    // ------------------------------------------------- the lit tube
-    //
-    // `[glow] panel_edge` grew a second profile on 2026-08-18: the halo
-    // it had always drawn, and a lit glass tube. The editor's kind that
-    // used to be called NEON is the halo and is now called GLOW; NEON is
-    // the tube. What follows proves both halves of that sentence — that
-    // the rename moved no pixel, and that the new word draws something a
-    // Gaussian blur cannot.
-
-    /// The width the proofs below stroke their border at.
-    ///
-    /// Any width would do. It is written down rather than taken off a
-    /// theme because the claims are about the COLOUR of the core and the
-    /// SHAPE of the light, and a border that measured zero would silently
-    /// remove the core from every one of them.
-    const A_BORDER: f32 = 2.0;
-
-    /// A theme with the halo lit the way a theme lit it before the tube
-    /// existed: the flag, a reach and an amount, and not one word about a
-    /// falloff.
-    ///
-    /// This IS the owner's own file. `~/.local/share/nacelle-desktop/`
-    /// carries a theme whose whole `[glow]` section is
-    /// `panel_edge.enabled = true` — the editor's old NEON, saved before
-    /// the kind had a second meaning, and silent about a falloff. Until
-    /// 2026-08-23 that silence inherited the master's `gauss` and this
-    /// theme drew a halo; the master's own falloff is `tube` now, so the
-    /// same file inherits NEON instead — the name below says what the
-    /// token declares (nothing), not what the picture used to be.
-    fn a_silent_falloff_theme() -> theme::ResolvedTheme {
-        theme::bake_over_master(
-            "[glow]\n\
-             panel_edge.enabled = true\n\
-             panel_edge.radius = 2.0u\n\
-             panel_edge.alpha = 0.34\n",
-        )
-    }
-
-    /// The same theme with the halo's own word, spoken rather than
-    /// inherited — for a proof that needs the shape and not the silence.
-    fn a_gauss_theme() -> theme::ResolvedTheme {
-        theme::bake_over_master(
-            "[glow]\n\
-             panel_edge.enabled = true\n\
-             panel_edge.radius = 2.0u\n\
-             panel_edge.alpha = 0.34\n\
-             panel_edge.falloff = gauss # enum: linear | quad | gauss | halo | tube\n",
-        )
-    }
-
-    /// The same theme with the one word that makes it a tube.
-    ///
-    /// The `enum:` list is restated because a re-declaration in the same
-    /// stage replaces the token whole, list included (`cascade.rs`'s
-    /// `declare`), and an enum's baked value is an INDEX into the list it
-    /// was declared with. A SAVED file does not restate anything — the
-    /// writer patches the bytes of a value span and leaves the master's
-    /// declaration where it is — so this line is an artefact of baking an
-    /// overlay, not of what a user's theme looks like.
-    fn a_tube_theme() -> theme::ResolvedTheme {
-        theme::bake_over_master(
-            "[glow]\n\
-             panel_edge.enabled = true\n\
-             panel_edge.radius = 2.0u\n\
-             panel_edge.alpha = 0.34\n\
-             panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube\n",
-        )
-    }
-
-    /// What this function did before it could draw a tube, transcribed
-    /// statement for statement: four token reads, the pulse, and one
-    /// unshaped glow ring.
-    ///
-    /// The emitter it calls is proved separately and against its own
-    /// transcript ([`crate::draw::tests::the_shaped_emitter_still_draws_the_unshaped_halo`]);
-    /// what is proved here is the layer above it — that a theme's four
-    /// keys still reach the same call with the same numbers, and that
-    /// nothing new was laid beside it.
-    fn the_halos_own_transcript(
-        dl: &mut DrawList,
-        t: &theme::ResolvedTheme,
-        r: Rect,
-        c: &[Corner; 4],
-        segments: u8,
-        edge: Color,
-        now: f64,
-    ) {
-        let id = |n: &str| theme::id(n).unwrap_or(TokenId::MISSING);
-        if !t.flag(id("glow.panel_edge.enabled")) {
-            return;
-        }
-        let radius = t.px(id("glow.panel_edge.radius")).max(0.0);
-        let alpha = (t.px(id("glow.panel_edge.alpha")) * t.px(id("glow.alpha_scale")))
-            .clamp(0.0, 1.0);
-        if radius <= 0.0 || alpha <= 0.0 {
-            return;
-        }
-        let alpha = (alpha
-            * crate::motion::Effect::of("glow_pulse").cyclic_amplitude(now))
-        .clamp(0.0, 1.0);
-        if alpha <= 0.0 {
-            return;
-        }
-        dl.glow_ring(r, c, segments, radius, edge.alpha(alpha), FontSystem::mask_soft_uv());
-    }
-
-    /// THE RENAME MOVED NO PIXEL OF THE OUTWARD FACE — and since the
-    /// border/effect split (2026-08-25) the halo carries an INWARD face
-    /// too, which this proof holds to its own two lines instead.
-    ///
-    /// The owner's condition on calling the old kind GLOW was that a
-    /// theme already wearing it look exactly the same afterwards. So the
-    /// theme that WAS the old NEON is drawn twice — once by the
-    /// transcript of the code that drew it, once by the code that now
-    /// offers two profiles — and the transcript's list must be exactly
-    /// the PREFIX of today's: same commands, same vertices, in the same
-    /// order. What follows that prefix is the split's own addition — an
-    /// effect wears both walls of the band now, halo and tube alike —
-    /// and it is held to being (a) present and (b) strictly inside the
-    /// band's inner contour, never touching the outward picture.
-    ///
-    /// The master's `boost` moved from 1.0 to 2.6 on the rename's own
-    /// day, which is exactly the kind of change the prefix half exists
-    /// to catch: a drive read on the halo road would have burned the
-    /// border of every theme that had ever turned the glow on. It is
-    /// read only under `tube`, and this is where that is checked.
-    #[test]
-    fn renaming_the_halo_moved_no_pixel() {
-        let t = a_gauss_theme();
-        let edge = Color { r: 0.35, g: 0.62, b: 0.94, a: 1.0 };
-        let c = [Corner::round(9.0); 4];
-        let r = box_();
-        let mut was = DrawList::recording();
-        the_halos_own_transcript(&mut was, &t, r, &c, 6, edge, AT_REST);
-        assert!(
-            was.cmds().iter().any(|c| matches!(c, DrawCmd::GlowRing { .. })),
-            "the halo theme drew no glow, so this proves nothing: {:?}",
-            was.cmds()
-        );
-        let mut now = DrawList::recording();
-        panel_edge_glow(&mut now, &t, r, &c, 6, edge, A_BORDER, AT_REST);
-        // The register is unchanged whole: the inward face is the same
-        // intent's second wall, not a second glow to hash.
-        let dump = |dl: &DrawList| {
-            dl.cmds().iter().map(|c| c.to_string()).collect::<Vec<_>>().join("\n")
-        };
-        assert_eq!(dump(&was), dump(&now));
-        // The outward face, vertex for vertex, as the prefix.
-        let verts = |dl: &DrawList| {
-            dl.verts.iter().map(|v| (v.pos, v.uv, v.color)).collect::<Vec<_>>()
-        };
-        let (was_v, now_v) = (verts(&was), verts(&now));
-        assert!(
-            now_v.len() > was_v.len(),
-            "the halo grew no inward face — the border/effect split lost a wall"
-        );
-        assert_eq!(was_v[..], now_v[..was_v.len()], "the outward face moved");
-        // And the addition stays behind the band's inner wall.
-        for (pos, _, _) in &now_v[was_v.len()..] {
-            assert!(
-                pos[0] >= r.x + A_BORDER - 1e-3
-                    && pos[0] <= r.right() - A_BORDER + 1e-3
-                    && pos[1] >= r.y + A_BORDER - 1e-3
-                    && pos[1] <= r.bottom() - A_BORDER + 1e-3,
-                "the inward face leaked past the band's inner contour: {pos:?}"
-            );
-        }
-    }
-
-    /// THE OWNER'S SAVED THEME NOW OPENS ON THE TUBE, NOT THE HALO.
-    ///
-    /// Until 2026-08-23 a file that said `panel_edge.enabled = true` and
-    /// nothing else about a falloff inherited the master's `gauss`. The
-    /// master's own falloff moved to `tube` that day (the neon-by-default
-    /// change), so the same sparse file now inherits NEON — the picture
-    /// is asserted equal to a theme that names `tube` outright, not just
-    /// "not the halo," so a build where inheritance quietly stopped
-    /// reaching the master would fail here too.
-    ///
-    /// `gauss` did not stop being a real profile; it stopped being what
-    /// silence resolves to. A theme that still asks for it by name gets
-    /// exactly the halo it always did, core-less ring included.
-    #[test]
-    fn a_theme_that_names_no_falloff_inherits_the_tube() {
-        let edge = Color { r: 0.35, g: 0.62, b: 0.94, a: 1.0 };
-        let c = [Corner::round(9.0); 4];
-        let profiles = |t: &theme::ResolvedTheme| -> Vec<crate::draw::GlowProfile> {
-            let mut dl = DrawList::recording();
-            panel_edge_glow(&mut dl, t, box_(), &c, 6, edge, A_BORDER, AT_REST);
-            dl.cmds()
-                .iter()
-                .filter_map(|cmd| match cmd {
-                    DrawCmd::GlowRing { profile, .. } => Some(*profile),
-                    _ => None,
-                })
-                .collect()
-        };
-        let silent = a_silent_falloff_theme();
-        let spoken = profiles(&a_tube_theme());
-        assert_eq!(
-            profiles(&silent),
-            spoken,
-            "a theme that says nothing about a falloff no longer matches the word `tube`"
-        );
-        assert!(
-            !spoken[0].is_halo(),
-            "the word `tube` reached nothing — {:?} is still the halo, so the \
-             claim above is about a build where the word does not resolve",
-            spoken[0]
-        );
-
-        let named_gauss = a_gauss_theme();
-        assert_eq!(
-            profiles(&named_gauss),
-            vec![crate::draw::GlowProfile::HALO],
-            "a theme that names gauss outright was not given the halo"
-        );
-        let mut dl = DrawList::recording();
-        panel_edge_glow(&mut dl, &named_gauss, box_(), &c, 6, edge, A_BORDER, AT_REST);
-        assert!(
-            !dl.cmds().iter().any(|c| matches!(c, DrawCmd::Ring { .. })),
-            "the halo burned a core over the border: {:?}",
-            dl.cmds()
-        );
-    }
-
-    /// THE MASTER CARRIES THE TUBE, AND RUST CARRIES NONE OF IT.
-    ///
-    /// The governing principle asked of the one feature most likely to
-    /// break it: a tube is a LOOK, and a look lives in a theme file. Every
-    /// number the tube is made of is read back through the same reader
-    /// the frame uses and asserted to describe a tube rather than a halo
-    /// wearing the word — a drive above rest, light that falls faster
-    /// than the disk's own, a band that lifts, and a reach for it to lift
-    /// over.
-    ///
-    /// FIVE SEPARATE CLAIMS, deliberately: the tube degrades knob by knob
-    /// and each degradation is silent. A master that lost `tube_decay`
-    /// alone would still draw a burned core inside a lifted band and pass
-    /// every other proof in this file, because a missing token reads
-    /// zero, a zero decay clamps to the halo's own 1.0, and nothing
-    /// anywhere says a word about it.
-    #[test]
-    fn the_master_carries_the_tubes_whole_dress() {
-        static WORD: OnceLock<Option<u16>> = OnceLock::new();
-        let id = |n: &str| theme::id(n).unwrap_or(TokenId::MISSING);
-        let keys = TubeKeys {
-            falloff: id("glow.panel_edge.falloff"),
-            boost: id("glow.panel_edge.boost"),
-            decay: id("glow.panel_edge.tube_decay"),
-            aura: id("glow.panel_edge.tube_aura"),
-            aura_reach: id("glow.panel_edge.tube_aura_reach"),
-            bands: id("glow.panel_edge.tube_bands"),
-            cutoff: id("glow.panel_edge.tube_cutoff"),
-            core_sat: id("glow.panel_edge.tube_core_sat"),
-        };
-        let t = a_tube_theme();
-        let tube = tube_dress(&t, &keys, &WORD)
-            .expect("the master does not name `tube` in its own falloff list");
-        assert!(
-            tube.boost > 1.0,
-            "the master drives the core at {}, which is no drive at all",
-            tube.boost
-        );
-        assert!(
-            tube.profile.decay > 1.0,
-            "the master's decay is {}, which is the gauss halo",
-            tube.profile.decay
-        );
-        assert!(
-            tube.profile.aura > 1.0,
-            "the master's aura is {}, which lifts nothing",
-            tube.profile.aura
-        );
-        assert!(
-            tube.profile.aura_reach > 0.0,
-            "the master's aura reaches {}, so it lifts nothing",
-            tube.profile.aura_reach
-        );
-        // The fifth claim, and the one that used to be a constant in
-        // draw.rs: at one band the decay has nowhere to land and the
-        // tube IS the halo, whatever the other four numbers say.
-        assert!(
-            tube.profile.bands > 1,
-            "the master cuts the light into {} band(s), so its decay reaches nothing",
-            tube.profile.bands
-        );
-        // The sixth claim: the master spends the WHOLE of `radius` —
-        // cutoff at its 1.0 identity — because the ramp itself is
-        // exactly zero at the reach since 2026-08-25 (`tube_decay`'s
-        // own doc carries the rewrite); an early cut would shorten a
-        // gradient that already ends, which is the sketch the owner
-        // rejected. The range check still refuses a NaN or a value the
-        // clamp in `tube_dress` should have caught.
-        assert!(
-            (0.0..=1.0).contains(&tube.profile.cutoff) && tube.profile.cutoff == 1.0,
-            "the master's cutoff is {}, not the identity the terminating ramp calls for",
-            tube.profile.cutoff
-        );
-        assert!(!tube.profile.is_halo(), "the master's tube {:?} is a halo", tube.profile);
-    }
-
-    /// EVERY NUMBER OF A TUBE COMES FROM THE THEME THAT ASKED FOR IT, and
-    /// an impossible one is stopped without becoming a design decision.
-    ///
-    /// `the_master_carries_the_tubes_whole_dress` above proves the master
-    /// DECLARES the dress; it cannot prove anything READS it. A reader
-    /// that ignored a token and answered the master's own number from
-    /// Rust passes it, and passes every other proof in this file — which
-    /// is exactly how the band count came to be a constant in `draw.rs`
-    /// in the first place. So every number asked for here is deliberately
-    /// NOT the master's, and the test says so rather than trusting it.
-    ///
-    /// The clamps are guards on a USER FILE, not looks: a decay below 1
-    /// would spread the light wider than the halo it sharpens, an aura
-    /// below 1 would dim the glass it saturates, a reach outside 0..1 is
-    /// not a fraction, and a band count is how many ring strokes this
-    /// process is asked to emit. A theme inside every declared range
-    /// meets none of them.
-    #[test]
-    fn every_number_of_a_tube_comes_from_the_theme_that_asked() {
-        static WORD: OnceLock<Option<u16>> = OnceLock::new();
-        let id = |n: &str| theme::id(n).unwrap_or(TokenId::MISSING);
-        let keys = TubeKeys {
-            falloff: id("glow.panel_edge.falloff"),
-            boost: id("glow.panel_edge.boost"),
-            decay: id("glow.panel_edge.tube_decay"),
-            aura: id("glow.panel_edge.tube_aura"),
-            aura_reach: id("glow.panel_edge.tube_aura_reach"),
-            bands: id("glow.panel_edge.tube_bands"),
-            cutoff: id("glow.panel_edge.tube_cutoff"),
-            core_sat: id("glow.panel_edge.tube_core_sat"),
-        };
-        // One key overridden at a time, so a reader that answered the
-        // right number for the wrong key is caught too.
-        let dressed = |key: &str, value: &str| -> Tube {
-            let t = theme::bake_over_master(&format!(
-                "[glow]\n\
-                 panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube\n\
-                 panel_edge.{key} = {value}\n"
-            ));
-            tube_dress(&t, &keys, &WORD).expect("the theme names `tube` and got no tube")
-        };
-        let master = {
-            let t = a_tube_theme();
-            tube_dress(&t, &keys, &WORD).expect("the master names `tube` and got no tube")
-        };
-        // Read out of the profile, so the assertions below compare a
-        // theme's number against the reader's answer and nothing else.
-        let seen: [(&str, fn(&Tube) -> f32, f32, [f32; 3]); 6] = [
-            ("boost", |t| t.boost, master.boost, [1.0, 1.9, 4.0]),
-            ("tube_decay", |t| t.profile.decay, master.profile.decay, [1.0, 2.25, 6.0]),
-            ("tube_aura", |t| t.profile.aura, master.profile.aura, [1.0, 1.4, 3.5]),
-            (
-                "tube_aura_reach",
-                |t| t.profile.aura_reach,
-                master.profile.aura_reach,
-                [0.0, 0.6, 1.0],
-            ),
-            ("tube_bands", |t| t.profile.bands as f32, master.profile.bands as f32, [
-                1.0, 3.0, 9.0,
-            ]),
-            // 1.0 is out of the probe set since the master says it
-            // itself (the identity, 2026-08-25); 0.85 carries the
-            // top-end case instead.
-            ("tube_cutoff", |t| t.profile.cutoff, master.profile.cutoff, [0.0, 0.55, 0.85]),
-        ];
-        for (key, read, mine, asked) in seen {
-            for want in asked {
-                assert_ne!(
-                    want, mine,
-                    "{key}: this proof needs a number the master does not already say"
-                );
-                let got = read(&dressed(key, &format!("{want}")));
-                assert!(
-                    (got - want).abs() < 1e-6,
-                    "a theme asked for {key} = {want} and the reader answered {got}"
-                );
-            }
-        }
-        // And the guards, each at both ends where the token has two.
-        for (key, value, want) in [
-            ("boost", "0.4", 1.0),
-            ("tube_decay", "0.5", 1.0),
-            ("tube_aura", "0.25", 1.0),
-            ("tube_aura_reach", "2.0", 1.0),
-            ("tube_bands", "0", 1.0),
-            ("tube_bands", "1000", crate::draw::GlowProfile::MAX_BANDS as f32),
-            ("tube_cutoff", "-0.5", 0.0),
-            ("tube_cutoff", "2.0", 1.0),
-        ] {
-            let t = dressed(key, value);
-            let got = match key {
-                "boost" => t.boost,
-                "tube_decay" => t.profile.decay,
-                "tube_aura" => t.profile.aura,
-                "tube_aura_reach" => t.profile.aura_reach,
-                "tube_cutoff" => t.profile.cutoff,
-                _ => t.profile.bands as f32,
-            };
-            assert!(
-                (got - want).abs() < 1e-6,
-                "{key} = {value} left this function as {got}, not the guarded {want}"
-            );
-        }
-    }
-
-    /// THE TUBE'S CORE IS BRIGHTER THAN ITS GLASS, AND PALER.
-    ///
-    /// Two relations, no numbers. Brighter: every channel of the core is
-    /// at least the edge's and one of them is strictly above it — that is
-    /// what a drive above 1 means. Paler: the spread between the core's
-    /// strongest and weakest channel is SMALLER than the edge's, which is
-    /// the arithmetic of clipping and the reason a photographed neon sign
-    /// has a white core whatever colour it is.
-    ///
-    /// Coverage is not light: the core's alpha is the edge's, untouched.
-    #[test]
-    fn the_tube_burns_a_core_brighter_and_paler_than_its_glass() {
-        let t = a_tube_theme();
-        // A saturated colour, because the claim is about what happens to
-        // a HUE under a drive; a grey has no spread to close.
-        let edge = Color { r: 0.42, g: 0.14, b: 0.86, a: 0.9 };
-        let c = [Corner::round(9.0); 4];
-        let mut dl = DrawList::recording();
-        panel_edge_glow(&mut dl, &t, box_(), &c, 6, edge, A_BORDER, AT_REST);
-        let core = dl
-            .cmds()
-            .iter()
-            .find_map(|cmd| match cmd {
-                DrawCmd::Ring { color, stroke, .. } => Some((*color, *stroke)),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the tube burned no core: {:?}", dl.cmds()));
-        let (core, stroke) = core;
-        assert_eq!(stroke, A_BORDER, "the core is not the border it is made of");
-        for (got, was, ch) in
-            [(core.r, edge.r, 'r'), (core.g, edge.g, 'g'), (core.b, edge.b, 'b')]
-        {
-            assert!(got >= was - 1e-6, "the core's {ch} {got} is darker than the glass {was}");
-        }
-        assert!(
-            core.r > edge.r + 1e-6 || core.g > edge.g + 1e-6 || core.b > edge.b + 1e-6,
-            "the core {core:?} is not brighter than the glass {edge:?} anywhere"
-        );
-        let spread = |c: Color| c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
-        assert!(
-            spread(core) < spread(edge) - 1e-6,
-            "the core {core:?} kept the glass's full saturation; a driven pixel \
-             clips toward white"
-        );
-        assert!((core.a - edge.a).abs() < 1e-6, "the drive moved the coverage, not the light");
-    }
-
-    /// EACH OF THE THREE SWITCHES SILENCES THE TUBE ON ITS OWN.
-    ///
-    /// Until 2026-08-23 the master shipped `panel_edge` disabled, at a
-    /// reach of zero and an amount of zero, so naming `tube` alone drew
-    /// nothing and that WAS the governing principle: a tube is a theme's
-    /// decision, never a default. That guarantee is retired on purpose —
-    /// the master itself is now an enabled, reached, amounted tube, which
-    /// is the neon-by-default change this file's own name argues against
-    /// and lost. What survives it: turn any ONE of the three off
-    /// explicitly, whatever the other two say, and the glow still draws
-    /// nothing.
-    #[test]
-    fn any_one_switch_off_silences_the_tube() {
-        let edge = Color { r: 0.42, g: 0.14, b: 0.86, a: 0.9 };
-        let c = [Corner::round(9.0); 4];
-        let decl = "panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube\n";
-        for (what, extra) in [
-            (
-                "disabled",
-                format!(
-                    "panel_edge.enabled = false\npanel_edge.radius = 2.0u\n\
-                     panel_edge.alpha = 0.34\n{decl}"
-                ),
-            ),
-            (
-                "no reach",
-                format!(
-                    "panel_edge.enabled = true\npanel_edge.radius = 0u\n\
-                     panel_edge.alpha = 0.34\n{decl}"
-                ),
-            ),
-            (
-                "no amount",
-                format!(
-                    "panel_edge.enabled = true\npanel_edge.radius = 2.0u\n\
-                     panel_edge.alpha = 0.0\n{decl}"
-                ),
-            ),
-        ] {
-            let t = theme::bake_over_master(&format!("[glow]\n{extra}"));
-            let mut dl = DrawList::recording();
-            panel_edge_glow(&mut dl, &t, box_(), &c, 6, edge, A_BORDER, AT_REST);
-            assert!(
-                dl.cmds().is_empty() && dl.verts.is_empty(),
-                "{what} drew {:?}",
-                dl.cmds()
-            );
-        }
-    }
-
-    /// LINE, GLOW AND NEON ARE THREE PICTURES.
-    ///
-    /// Driven from the EDITOR'S OWN MODEL rather than from hand-written
-    /// token text: each kind's edit set is turned into an overlay, baked,
-    /// and drawn. That is what makes this a proof about the three names
-    /// the owner sees in a list — a kind that wrote the wrong word, or
-    /// wrote nothing, fails here and not in a review.
-    ///
-    /// Each step, not just the ends. LINE to GLOW is the light arriving;
-    /// GLOW to NEON is the same light spent differently, and it is the
-    /// step a rename could have left standing still.
-    #[test]
-    fn the_three_border_kinds_are_three_pictures() {
-        use crate::theme::edit::{border_edits, Border, Scope};
-        use crate::theme::color::Oklch;
-        let colour = Oklch { l: 0.62, c: 0.19, h: 285.0, alpha: 1.0 };
-        let edge = Color { r: 0.42, g: 0.14, b: 0.86, a: 0.9 };
-        let c = [Corner::round(9.0); 4];
-        let dump = |kind: Border| {
-            let mut glow = String::new();
-            let mut elev = String::new();
-            let mut border = String::new();
-            for e in border_edits(Scope::Theme, kind, colour, false) {
-                // The falloff carries its declaration back, for the same
-                // reason `a_tube_theme` does: an overlay re-declares the
-                // token, a saved file patches a value span and does not.
-                let tail = if e.token.ends_with("falloff") {
-                    " # enum: linear | quad | gauss | halo | tube"
-                } else {
-                    ""
-                };
-                if let Some(k) = e.token.strip_prefix("glow.") {
-                    glow.push_str(&format!("{k} = {}{tail}\n", e.value));
-                } else if let Some(k) = e.token.strip_prefix("elev.panel.") {
-                    elev.push_str(&format!("{k} = {}\n", e.value));
-                } else if let Some(k) = e.token.strip_prefix("border.") {
-                    // The colour now lands on the shared root `border.default`
-                    // (a `[border]` token), not the `elev.panel` leaf. It
-                    // does not reach this picture — `panel_edge_glow` takes
-                    // its `edge` as a parameter — but the overlay must still
-                    // bake the whole edit set the kind wrote.
-                    border.push_str(&format!("{k} = {}\n", e.value));
-                } else {
-                    panic!("a border kind wrote {}, which this proof cannot bake", e.token);
-                }
-            }
-            let t = theme::bake_over_master(&format!(
-                "[border]\n{border}[elev.panel]\n{elev}[glow]\n{glow}"
-            ));
-            let mut dl = DrawList::recording();
-            panel_edge_glow(&mut dl, &t, box_(), &c, 6, edge, A_BORDER, AT_REST);
-            (
-                dl.cmds().iter().map(|c| c.to_string()).collect::<Vec<_>>().join("\n"),
-                dl.verts.iter().map(|v| (v.pos, v.uv, v.color)).collect::<Vec<_>>(),
-            )
-        };
-        let line = dump(Border::Line);
-        let glow = dump(Border::Glow);
-        let neon = dump(Border::Neon);
-        assert!(line.0.is_empty(), "LINE lit something: {}", line.0);
-        assert_ne!(glow.0, line.0, "GLOW drew what LINE draws");
-        assert_ne!(neon.0, glow.0, "NEON drew what GLOW draws");
-        assert_ne!(neon.1, glow.1, "NEON and GLOW put their vertices in the same place");
-    }
 }

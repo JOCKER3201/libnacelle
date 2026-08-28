@@ -267,9 +267,9 @@ fn dashes(ctx: &mut Ctx, path: &[[f32; 2]], w: f32, dash: f32, gap: f32, color: 
     }
 }
 
-/// The `glow.focus_ring` halo around the ring band — `element` tint
-/// rule, exactly as `panel_edge_glow`: the halo wears the ring's own
-/// resolved colour, at the class's alpha scaled by the one global knob.
+/// The `glow.focus_ring` halo around the ring band — the `element` tint
+/// rule: the halo wears the ring's own resolved colour, at the class's
+/// alpha scaled by the one global knob.
 fn glow(ctx: &mut Ctx, ring: Rect, corner: Corner, tint: Color) {
     static ON: OnceLock<TokenId> = OnceLock::new();
     static RADIUS: OnceLock<TokenId> = OnceLock::new();

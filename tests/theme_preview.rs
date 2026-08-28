@@ -77,22 +77,23 @@ fn a_preview_is_seen_costs_no_content_epoch_and_lifts_off_again() {
 
     theme::clear_preview();
 
-    // A FLAG previews too — not only a colour. The editor's LINE/NEON is a
-    // colour plus `glow.panel_edge.enabled`, and if the flag half silently
-    // failed, switching to NEON would still LOOK right (the colour moved)
-    // while switching back to LINE would change nothing at all.
-    let flag = theme::id("glow.panel_edge.enabled").expect("glow.panel_edge.enabled");
+    // A FLAG previews too — not only a colour. If the flag half silently
+    // failed, an editor switch would still LOOK right wherever a colour
+    // moved beside it while the switch itself changed nothing at all.
+    // (`glow.focus_ring.enabled` since 2026-08-27 — the panel-edge class
+    // left with the effect, at the owner's order.)
+    let flag = theme::id("glow.focus_ring.enabled").expect("glow.focus_ring.enabled");
     let flag_before = theme::resolved().flag(flag);
     let want = !flag_before;
     let refused = theme::set_preview(&[(
-        "glow.panel_edge.enabled",
+        "glow.focus_ring.enabled",
         if want { "true" } else { "false" },
     )]);
     assert!(refused.is_empty(), "the flag was refused: {refused:?}");
     assert_eq!(
         theme::resolved().flag(flag),
         want,
-        "a previewed flag did not reach the bake — LINE/NEON cannot switch"
+        "a previewed flag did not reach the bake — the editor's switches cannot switch"
     );
     theme::clear_preview();
     assert_eq!(theme::resolved().flag(flag), flag_before);

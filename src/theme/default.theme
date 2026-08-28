@@ -408,9 +408,7 @@ subtle   = alpha(@accent.primary, 0.30)
                     # (m3 M5: was 0.22; raised with border.default so the two-stroke double edge still reads as one halo)
 default  = alpha(@accent.primary, 0.78)
                     # THE 1 px GLOWING PANEL EDGE — family A's signature · 1-6 · colour with straight alpha 0..1 · accent.primary at 0.78
-                    # (m3 M5: was 0.55. Every image calls the edge the brightest line in the picture; the raise predates P7,
-                    # when no glow primitive existed and the edge carried the whole signature alone. Since P7 glow.panel_edge
-                    # RENDERS and rides this colour, and the raised value still measures right under it.
+                    # (m3 M5: was 0.55. Every image calls the edge the brightest line in the picture.
                     # Measured on the original seeds: crimson's panel ring 3.00 -> 4.60, aurora's 6.17 -> 8.33, pure's 5.61 -> 9.18)
 strong   = @accent.primary
                     # emphasised and alarmed frames · 4 (the all-red console) · colour · accent.primary at full alpha
@@ -437,7 +435,7 @@ width         = @stroke.hair
                     # the global default edge width every container inherits · all · str, device px after stroke(x) · stroke.hair = 0.2x global u
                     # THE BORDER'S OWN THICKNESS, and the one the theme editor's BORDER WIDTH writes (BASIC, 2026-08-18). A reference by default on purpose: a theme
                     # that has said nothing about its frames follows the kerf, and only a file whose author moved that slider carries a literal here. THIS SECTION HAS
-                    # NO RADIUS — seven keys of geometry and not one of them is one; the only radius a border has is the REACH of its light, [glow] panel_edge.radius.
+                    # NO RADIUS — seven keys of geometry and not one of them is one.
 style         = solid
                     # how the ring is drawn · 9 (brackets) · one of solid | segmented | brackets | none · literal enum
 dash          = 1.6u
@@ -1061,10 +1059,8 @@ follow_density = false
 # different decision for a panel edge (wide, soft, always on in family A)
 # than for a chart line (tight, or the data stops being readable).
 #
-# EVERYTHING IS OFF IN DEFAULT. A theme that wants image 2's bloom turns on
-# `glow.panel_edge` and gives it a radius; nothing else changes. The bloom on
-# the wall behind the monitor in image 2 is the MONITOR blooming, not per-glyph
-# work — the same look comes from the panel-edge glow plus the overlay plate.
+# EVERYTHING IS OFF IN DEFAULT. A theme that wants a bloom turns on a class
+# and gives it a radius; nothing else changes.
 #
 # `color = element` is an enum word meaning "the colour of the thing being
 # glowed". It is baked as an explicit inherit flag, never as a negative alpha:
@@ -1083,197 +1079,19 @@ follow_density = false
 # node dots so the sprite core stays saturated, linear for separators and
 # leader lines.
 #
-# `tube` joins that list on panel_edge alone (2026-08-18). It is the only
-# falloff word with a reader, and the only one that brings keys of its own: a
-# lit glass tube is not a spread of the same light but a different spend of it
-# — a core driven past what the display can show, a saturated band against the
-# glass, and light that stops instead of fading. See panel_edge.falloff below.
-#
 # `boost` IS NOT ONE KEY WITH ONE MEANING, and every class below says so in
-# one line where it should say so in this paragraph. Fifteen classes declare
-# it; ONE of them is read — `panel_edge`, and only under falloff = tube, where
-# it drives the tube's CORE and is clipped per channel on the CPU. The other
-# fourteen have no reader at all, so their line ("HDR overdrive ... survives
-# only on the HDR path with no LUT") states an INTENT for a path that is not
-# built: nothing carries a channel above 1 out of this toolkit today. Read
-# panel_edge.boost for what the one live reader does; read the rest as a
-# reservation of the name.
+# one line where it should say so in this paragraph. The classes declare it
+# and NONE of them is read — their line ("HDR overdrive ... survives only on
+# the HDR path with no LUT") states an INTENT for a path that is not built:
+# nothing carries a channel above 1 out of this toolkit today. Read the key
+# as a reservation of the name.
+#
+# THE PANEL-EDGE CLASS IS GONE (2026-08-27, the owner's order: "usuń ten
+# efekt całkowicie") — the glowing panel border, its tube dress and every
+# `panel_edge.*` key with it. `focus_ring` below is the one class with a
+# reader today.
 # =========================================================================
 [glow]
-
-# ---- panel_edge — the 1px glowing panel border, family A's signature ----
-panel_edge.enabled = true
-                    # draw a glow around every panel's edge; images 1-6, 7-10;
-                    # bool; ON in default (2026-08-23: the shipped look is
-                    # NEON, the lit glass tube, not a bare line) — a theme
-                    # opts out
-panel_edge.color = element
-                    # glow tint; images 1-6; colour or the word `element`,
-                    # which means the panel edge's own resolved colour
-panel_edge.radius = 4u
-                    # how far the glow reaches past EACH wall of the
-                    # border; images 1-6; u, 0u .. 8.76u; 0u is the
-                    # `none` sentinel — draw nothing. The theme editor's
-                    # EFFECT SIZE writes this (BASIC, 2026-08-18; renamed
-                    # from GLOW REACH 2026-08-25) and its track spans the
-                    # whole declared range now: the top first landed on
-                    # 2.19u — 4mm on the reference monitor's own pixel
-                    # pitch at 3840x2160, back-solved from its 699.48 x
-                    # 394.73mm viewable area — and the owner raised it by
-                    # 300% the same day ("po jednej i drugiej stronie"),
-                    # 2.19u * 4 = 8.76u a side. The old 4u wall moved
-                    # with it; 4u stays this token's shipped default,
-                    # and border_edits()'s undressed-theme seed of 1.6u
-                    # is still only where a theme's own first lit pick
-                    # lands.
-panel_edge.falloff = tube # enum: linear | quad | gauss | halo | tube
-                    # how the light is spent across the radius; images 1-6,
-                    # 7-10. `gauss` is the wide soft halo of images 7 and 10
-                    # and it is what this key has always meant.
-                    # `tube` is the LIT GLASS TUBE of a neon sign: the same
-                    # soft disk with its distance re-mapped by tube_decay so
-                    # the light stops instead of fading, its core burned by
-                    # `boost` and its colour carried by tube_aura. The four
-                    # `tube_*` keys below are read only under this word.
-                    # THE `enum:` DECLARATION IS LOAD-BEARING. Without it a
-                    # token's vocabulary grows from use, `gauss` is the only
-                    # word in it, and the one word a theme could never
-                    # deliver is the one this key now exists for — the same
-                    # trap `[elev.*] edge.mode = solid` records against
-                    # `gradient`. The other fourteen glow classes still grow
-                    # theirs from use: they have no reader, and a list is a
-                    # promise about numbering that only a reader can keep.
-panel_edge.mode = auto
-                    # rendering technique; -; one of off | shell | sprite |
-                    # text4 | auto; auto picks shell at radius <= 0.85u
-panel_edge.alpha = 0.34
-                    # glow opacity — the ONLY 0..1 magnitude; images 1-6;
-                    # 0.34 is `border_edits`'s own seed for a lit kind
-                    # picked on an undressed theme, applied to the master
-                    # itself (2026-08-23, the NEON-by-default change);
-                    # frac, 0.0 .. 1.0; state channel is glow_alpha
-panel_edge.boost = 2.6
-                    # how hard the edge's light is DRIVEN, as a multiple of
-                    # what the display can show; -; f, >= 1.0. THE CLIP IS
-                    # THE PICTURE: a channel driven past 1 shows as 1, so a
-                    # saturated colour loses its strongest channel first and
-                    # its weakest last, and the core of a tube goes pale and
-                    # then white while the light around it keeps the hue.
-                    # That is why a photograph of a neon sign has a white
-                    # core whatever colour the sign is.
-                    # THE CLIP HAPPENS HERE, ON THE CPU, per channel, before
-                    # the colour leaves the toolkit — one picture on every
-                    # display, and nothing downstream has to be asked. So the
-                    # overdrive does NOT reach an HDR swapchain as overdrive,
-                    # whatever the older wording on the other fourteen glow
-                    # classes says; a tube that stays bright on an R16F
-                    # target is a real request and an unanswered one (it
-                    # needs the clip lifted here AND a `grade()` that takes a
-                    # sample above 1, which is the renderer's repository).
-                    # Read ONLY under falloff = tube: a `gauss` halo is
-                    # spill, and spill is not driven — which is also what
-                    # keeps every theme written before this key had a reader
-                    # drawing exactly the picture it drew.
-                    # 2.6 clips the two strong channels of a mid-lightness
-                    # saturated edge and leaves the weakest one short: a
-                    # pale core with the hue still in it, not a white line.
-                    # 1.0 is no drive and a core of the tube's own colour.
-panel_edge.tube_decay = 3.0
-                    # the exponent on the tube's ramp, `(1 - d/reach) ^
-                    # decay`; -; f, >= 1.0; read only under falloff =
-                    # tube. THE CURVE TERMINATES (2026-08-25): whatever
-                    # this says, the ramp is exactly zero at the reach —
-                    # a polynomial owes nothing to any asymptote — so
-                    # this key shapes only HOW the light spends itself on
-                    # the way there, never whether it arrives. 1.0 is a
-                    # straight gradient, the line a graphics program lays
-                    # between two stops; 3.0 leans it into the glass —
-                    # steep off the core, gentle on the landing — which
-                    # is the sketched profile the owner settled the
-                    # rewrite with. The gaussian this replaced could not
-                    # end: its re-map chased the mask's zero texel
-                    # without ever sitting on it (2026-08-24, measured
-                    # at decay 50: the background channel still moved
-                    # across the outer 90% of a 4u reach), which is why
-                    # every earlier number here was chasing the wrong
-                    # thing.
-panel_edge.tube_aura = 2.0
-                    # how much stronger than `alpha` the colour is laid
-                    # immediately outside the tube; -; f, >= 1.0; read only
-                    # under falloff = tube. The core has given its colour up
-                    # to `boost`, so this band is where the sign's identity
-                    # lives and it has to out-shout the edge itself or the
-                    # tube reads as a white line with a smudge. 2.0 doubles
-                    # it; 1.0 is no aura and `alpha` all the way out. The
-                    # product is clipped at 1.0 whatever it comes to,
-                    # because a blend factor outside 0..1 is not a brighter
-                    # pixel — it is undefined output (5.0, 5.13).
-panel_edge.tube_aura_reach = 0.25
-                    # how far that stronger colour reaches, as a fraction of
-                    # `radius * tube_cutoff` — the reach the light actually
-                    # gets, see that key's own doc; -; frac, 0.0 .. 1.0;
-                    # read only under falloff = tube. It ramps from
-                    # tube_aura at the glass to 1.0 here and stays there.
-                    # 0.25 keeps the saturated band inside the ramp's own
-                    # brightest quarter — at decay 3 the ramp still holds
-                    # ~42% of its light here (2026-08-25's terminating
-                    # `(1-f)^decay`, see tube_decay), so the aura colours
-                    # light that is really there and lets go well before
-                    # the landing. 0.0 is no aura at all. The number is
-                    # EXACT on screen whatever tube_bands says: the reach
-                    # is always one of the rings the light is cut at, or
-                    # the picture would let go wherever the even cut
-                    # happened to have one.
-panel_edge.tube_bands = 5
-                    # how many rings the reach is cut into — the resolution
-                    # of tube_decay's ramp; -; n, 1 .. 16; read only under
-                    # falloff = tube. IT LOOKS LIKE A QUALITY KNOB AND IT IS
-                    # NOT ONE. The ramp is evaluated at the ring BOUNDARIES
-                    # and the picture is a straight line between them, so a
-                    # coarser cut is not a rougher drawing of the same curve
-                    # — it is a different curve. At 1 the whole reach is a
-                    # single straight line from the glass to zero — the
-                    # tube collapses to a plain linear gradient, whatever
-                    # tube_decay says, because an exponent needs an interior
-                    # ring to show any bend. 5 puts a ring every fifth of
-                    # the reach: enough for decay 3's lean to read, and a
-                    # sprite ring stays cheaper than the maskless shell it
-                    # replaced. Raise it for a steeper decay, at one ring
-                    # stroke each. Every knot lands ON the curve whatever
-                    # this says — the count buys fidelity between knots,
-                    # never the endpoint, which is exactly 0 at the reach
-                    # at any count (2026-08-25).
-panel_edge.tube_cutoff = 1.0
-                    # where the geometry ENDS, as a fraction of `radius`;
-                    # -; frac, 0.0 .. 1.0; read only under falloff =
-                    # tube. Past `radius * tube_cutoff` no quad is
-                    # extruded at all. 1.0 — the identity — is the
-                    # working value since the 2026-08-25 rewrite: the
-                    # tube's ramp (`tube_decay`'s own doc) is exactly
-                    # zero at the reach by construction, so the curve
-                    # and the geometry now end in the same place and
-                    # there is no tail left for a cut to remove. The
-                    # key was added a day earlier (2026-08-24), when the
-                    # falloff was still a re-mapped gaussian that could
-                    # only approach the background, as the one hard stop
-                    # that could finish what that curve never did; it
-                    # stays because it still means what it always did —
-                    # an EARLIER end than `radius`, with the ramp
-                    # compressed into what is left — which a theme is
-                    # free to want on its own account.
-panel_edge.tube_core_sat = 0.70
-                    # the core's HSV saturation — the colour the band
-                    # itself burns at; -; frac, 0.0 .. 1.0; read only
-                    # under falloff = tube. The core keeps the edge's
-                    # HUE, wears this saturation and burns at full HSV
-                    # value, so the band is the brightest point of the
-                    # effect stated as a COLOUR rather than reached by
-                    # clipping (the owner's own number, 2026-08-25:
-                    # "s = 70.00 w zapisie hsv"). 0.0 is a pure white
-                    # core, 1.0 the hue at full blast; `boost`'s old
-                    # per-channel drive made "how white" a function of
-                    # the edge's own lightness, which no token could
-                    # state — this one states it.
 
 # ---- focus_ring — the keyboard focus ring -------------------------------
 focus_ring.enabled = false
@@ -2926,7 +2744,7 @@ fill_alpha            = 1.0                   # alpha multiplier on fill · 1-6 
 fill_to               = @shape.panel.fill     # the far stop of the interior gradient · 1-6 · colour · == fill, so the fill is flat
 fill_angle            = 90deg                 # direction of the interior gradient · 1-6 · deg, 0..360 · ignored while fill_to == fill
 round_segments        = @corner.segments      # arc tessellation of a round corner · 1-6 · n, 3 .. 16 · @corner.segments = 6, a 0.4px chord error at an 8px radius: invisible, and 6 quads instead of 16
-glow                  = @glow.panel_edge      # which glow class this preset's edge wears · 1-6 · @glow.<class> or none · every glow.*.enabled is false in default, so this reference costs nothing until a theme turns it on
+glow                  = none                  # which glow class this preset's edge wears · 1-6 · @glow.<class> or none · none since 2026-08-27: the panel-edge class left with the effect
 dash                  = @border.edge.dash     # dash length along the ring · 1-6 · len · @border.edge.dash = 1.6u; used only when border_style = segmented
 gap                   = @border.edge.gap      # gap length along the ring · 1-6 · len · @border.edge.gap = 0.8u; used only when border_style = segmented
 phase                 = @border.edge.phase    # where the dash pattern starts on the ring · 1-6 · len · @border.edge.phase = 0u; used only when border_style = segmented
@@ -2956,7 +2774,7 @@ fill_alpha            = 1.0                   # alpha multiplier on fill · 7, 8
 fill_to               = @shape.card.fill      # the far stop of the interior gradient · 7, 8, 10 · colour · == fill, so the fill is flat
 fill_angle            = 90deg                 # direction of the interior gradient · 7, 8, 10 · deg, 0..360 · ignored while fill_to == fill
 round_segments        = @corner.segments      # arc tessellation of a round corner · 7, 8, 10 · n, 3 .. 16 · @corner.segments = 6, a 0.4px chord error at an 8px radius: invisible, and 6 quads instead of 16
-glow                  = @glow.panel_edge      # which glow class this preset's edge wears · 7, 8, 10 · @glow.<class> or none · every glow.*.enabled is false in default, so this reference costs nothing until a theme turns it on
+glow                  = none                  # which glow class this preset's edge wears · 7, 8, 10 · @glow.<class> or none · none since 2026-08-27: the panel-edge class left with the effect
 dash                  = @border.edge.dash     # dash length along the ring · 7, 8, 10 · len · @border.edge.dash = 1.6u; used only when border_style = segmented
 gap                   = @border.edge.gap      # gap length along the ring · 7, 8, 10 · len · @border.edge.gap = 0.8u; used only when border_style = segmented
 phase                 = @border.edge.phase    # where the dash pattern starts on the ring · 7, 8, 10 · len · @border.edge.phase = 0u; used only when border_style = segmented
@@ -2987,7 +2805,7 @@ fill_alpha            = 1.0                   # alpha multiplier on fill · 1, 2
 fill_to               = @shape.window.fill    # the far stop of the interior gradient · 1, 2, 7 · colour · == fill, so the fill is flat
 fill_angle            = 90deg                 # direction of the interior gradient · 1, 2, 7 · deg, 0..360 · ignored while fill_to == fill
 round_segments        = @corner.segments      # arc tessellation of a round corner · 1, 2, 7 · n, 3 .. 16 · @corner.segments = 6, a 0.4px chord error at an 8px radius: invisible, and 6 quads instead of 16
-glow                  = @glow.panel_edge      # which glow class this preset's edge wears · 1, 2, 7 · @glow.<class> or none · every glow.*.enabled is false in default, so this reference costs nothing until a theme turns it on
+glow                  = none                  # which glow class this preset's edge wears · 1, 2, 7 · @glow.<class> or none · none since 2026-08-27: the panel-edge class left with the effect
 dash                  = @border.edge.dash     # dash length along the ring · 1, 2, 7 · len · @border.edge.dash = 1.6u; used only when border_style = segmented
 gap                   = @border.edge.gap      # gap length along the ring · 1, 2, 7 · len · @border.edge.gap = 0.8u; used only when border_style = segmented
 phase                 = @border.edge.phase    # where the dash pattern starts on the ring · 1, 2, 7 · len · @border.edge.phase = 0u; used only when border_style = segmented
@@ -3358,7 +3176,7 @@ fill_alpha            = 1.0                   # alpha multiplier on fill · - ·
 fill_to               = @shape.modal.fill     # the far stop of the interior gradient · - · colour · == fill, so the fill is flat
 fill_angle            = 90deg                 # direction of the interior gradient · - · deg, 0..360 · ignored while fill_to == fill
 round_segments        = @corner.segments      # arc tessellation of a round corner · - · n, 3 .. 16 · @corner.segments = 6, a 0.4px chord error at an 8px radius: invisible, and 6 quads instead of 16
-glow                  = @glow.panel_edge      # which glow class this preset's edge wears · - · @glow.<class> or none · every glow.*.enabled is false in default, so this reference costs nothing until a theme turns it on
+glow                  = none                  # which glow class this preset's edge wears · - · @glow.<class> or none · none since 2026-08-27: the panel-edge class left with the effect
 dash                  = @border.edge.dash     # dash length along the ring · - · len · @border.edge.dash = 1.6u; used only when border_style = segmented
 gap                   = @border.edge.gap      # gap length along the ring · - · len · @border.edge.gap = 0.8u; used only when border_style = segmented
 phase                 = @border.edge.phase    # where the dash pattern starts on the ring · - · len · @border.edge.phase = 0u; used only when border_style = segmented
@@ -4374,7 +4192,7 @@ floor       = 0.00                    # unused outside step easing; -; 0..1; -
 duty        = 0.00                    # unused outside step easing; -; 0..1; -
 easing      = sine                    # curve · images 2,7 · enum: linear | ease_out | ease_in | ease_in_out | sine | step | custom · sine is legal on cyclic effects only
 easing_p    = [0.25, 0.10, 0.25, 1.00] # bezier points for easing = custom; -; 4 x f; TODO(default): chosen here, spec silent
-enabled     = false                   # OFF in default, like every glow class (5.13); -; bool; costs one of motion.idle_cap sources when on — and a theme must ask TWICE before anything moves, because object/window.rs's panel_edge_glow returns on glow.panel_edge.enabled before it ever asks the clock
+enabled     = false                   # OFF in default, like every glow class (5.13); -; bool; costs one of motion.idle_cap sources when on. No reader since the panel-edge effect left (2026-08-27) — the name is a reservation
 
 # ---- alarm_blink · cyclic alarm emphasis (CYCLIC SOURCE) -----------------
 [motion.alarm_blink]
@@ -4554,14 +4372,6 @@ wash                       = @severity.critical.text / 0.18  # the wash quad's s
 when                       = "severity >= critical"          # declarative trigger; image 1; text, a fixed predicate form; 5s falling-edge hysteresis
 motion.alarm_blink.enabled = true                  # the alarm emphasis starts cycling; image 1; bool; absolute path - overrides motion.alarm_blink.enabled
 component.alarm_bar.fill   = alpha(@severity.critical.text, 0.18)  # the top bar gets a body; image 1; colour; overrides component.alarm_bar.fill
-glow.panel_edge.enabled    = true                  # panel edges light up screen-wide; image 4; bool; overrides glow.panel_edge.enabled
-glow.panel_edge.alpha      = 0.7                   # how hard they light up — roughly double the resting master's own
-                    # 0.34 (2026-08-23); image 4; 0..1; overrides glow.panel_edge.alpha. Alert
-                    # has to outshout a master that now glows at rest, not merely glow.
-                    # No radius override here: the resting master's own reach is 4u,
-                    # the declared 0u..4u track's own ceiling (2026-08-23, "maximum by
-                    # default") — alert cannot reach further than the wall, so it
-                    # inherits the same 4u and carries its whole escalation on alpha.
 
 # ---- lockdown · a CONVENTION, not engine code: alert plus palette.data ---
 # 5.24 ships `normal` and `alert` in the engine and `lockdown` as a

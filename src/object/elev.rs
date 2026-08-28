@@ -358,7 +358,7 @@ impl Level {
         out
     }
 
-    /// Material, ring, and family A's bloom over the ring.
+    /// Material and ring.
     ///
     /// Answers the shape it drew, because a caller that has to fit
     /// content INSIDE the rung — a drop-down's rows, a panel's content
@@ -373,9 +373,8 @@ impl Level {
     /// for: a frosted panel whose blur stops at the content box, so the
     /// title band stands on the bed and only the body is glass.
     ///
-    /// The ring, the bloom and the cut are still the rung's and still
-    /// belong to `r` — a surface has one outline whatever is poured
-    /// inside it.
+    /// The ring and the cut are still the rung's and still belong to `r`
+    /// — a surface has one outline whatever is poured inside it.
     pub(crate) fn draw_glassed(
         &self,
         ctx: &mut Ctx,
@@ -385,29 +384,25 @@ impl Level {
         self.draw_in(ctx.dl, theme::resolved(), r, glass, ctx.t)
     }
 
-    /// [`Level::draw`] with the theme and the clock in hand and no frame
-    /// around it.
+    /// [`Level::draw`] with the theme in hand and no frame around it.
     ///
-    /// A rung touches nothing of a `Ctx` but its draw list and its clock,
-    /// and taking the theme as an argument is what lets one rung be drawn
-    /// from a theme that is not the published one — which is how the
-    /// picture this rung makes is put under test at all, gradient ring
-    /// included, without a test reaching into the process-wide theme every
-    /// other test is reading at the same time.
+    /// A rung touches nothing of a `Ctx` but its draw list, and taking
+    /// the theme as an argument is what lets one rung be drawn from a
+    /// theme that is not the published one — which is how the picture
+    /// this rung makes is put under test at all, gradient ring included,
+    /// without a test reaching into the process-wide theme every other
+    /// test is reading at the same time.
     ///
-    /// `now` is `Ctx::t`, seconds since application start, and it exists
-    /// here for one reader: the edge bloom breathes on `motion.glow_pulse`
-    /// and a cyclic effect has to be told what time it is. A caller with no
-    /// frame around it — every test below — passes a time of its own
-    /// choosing, which is the only way a pulse can be sampled at a stated
-    /// phase instead of at whenever the suite happened to run.
+    /// `_now` was the edge bloom's clock (`motion.glow_pulse`); the whole
+    /// panel-edge effect was removed on 2026-08-27 at the owner's order,
+    /// and the parameter stays only so every caller keeps compiling.
     pub(crate) fn draw_in(
         &self,
         dl: &mut crate::draw::DrawList,
         t: &theme::ResolvedTheme,
         r: Rect,
         glass: Rect,
-        now: f64,
+        _now: f64,
     ) -> ([Corner; 4], u8) {
         let (c, seg) = self.cut(t, r);
         // Glass INSTEAD of the fill, never on top of it — the master's own
@@ -446,16 +441,6 @@ impl Level {
                 Some((far, dir)) => dl.ring_grad(r, &c, seg, width, edge, far, dir),
                 None => dl.ring(r, &c, seg, width, edge),
             }
-            // The bloom keeps taking the ring's OWN colour, the near end:
-            // `glow_ring` is one additive sprite ring with one vertex
-            // colour, so a gradient halo is not a thing this call can carry
-            // and inventing a midpoint here would be a decision made in
-            // Rust. Its ALPHA breathes on `motion.glow_pulse`, which is
-            // what the clock is for; a two-colour ring and a breathing
-            // bloom are orthogonal — the gradient decides the ring's two
-            // ends, the pulse decides how brightly the halo over it is
-            // laid, and neither reads the other.
-            super::window::panel_edge_glow(dl, t, r, &c, seg, edge, width, now);
         }
         (c, seg)
     }
@@ -468,14 +453,11 @@ pub(crate) mod tests {
 
     /// The clock every proof in and under this module draws at.
     ///
-    /// A stated instant, not "whenever the suite ran": `draw_in`'s only
-    /// reader of the clock is the edge bloom's breath on
-    /// `motion.glow_pulse`, and a picture compared against another picture
-    /// has to be taken at the same phase as it. The master ships
-    /// `glow.panel_edge.enabled = true` (2026-08-23), so the pulse IS
-    /// sampled on every draw now — which is exactly why the instant must
-    /// be written down and held equal on both sides of a comparison,
-    /// rather than left to whatever moment the suite happens to run at.
+    /// A stated instant, not "whenever the suite ran". `draw_in` reads no
+    /// clock since the panel-edge effect was removed (2026-08-27, the
+    /// owner's order); the constant stays so every call site keeps its
+    /// stated phase, and so the next reader of the parameter inherits a
+    /// suite that already holds time equal on both sides of a comparison.
     pub(crate) const AT_REST: f64 = 0.0;
 
     /// BORDER SIZE MOVES EVERY PANEL'S RING, END TO END — the theme
@@ -526,19 +508,11 @@ pub(crate) mod tests {
     /// Those two and no others, which is why `window.rs` — the third
     /// object to join the ladder on the same day — does NOT use this and
     /// keeps a transcript of its own. Its private copy also stroked the
-    /// ring whatever the edge's ALPHA and laid the edge bloom
-    /// unconditionally, and a transcript that quietly dropped two of the
-    /// four things an object used to do would prove the no-move claim
-    /// about a picture nobody ever drew.
-    ///
-    /// A THIRD THING JOINED THE FOUR ON 2026-08-23, and it is not a
-    /// departure: `panel_edge_glow` is no longer a per-object decision
-    /// menu and tooltip's own old code could have carried or dropped — it
-    /// is the master's, unconditional, on every rung — so the transcript
-    /// calls it exactly as the ladder does, on the ring's own gate
-    /// (width alone, matching the departure above), rather than leaving
-    /// it out and proving the no-move claim about a picture the ladder
-    /// does not draw either.
+    /// ring whatever the edge's ALPHA, and a transcript that quietly
+    /// dropped one of the things an object used to do would prove the
+    /// no-move claim about a picture nobody ever drew. (The edge bloom
+    /// both transcripts once laid after the ring is gone with the whole
+    /// panel-edge effect, 2026-08-27, the owner's order.)
     pub(crate) fn the_private_copy(
         dl: &mut DrawList,
         t: &theme::ResolvedTheme,
@@ -560,7 +534,6 @@ pub(crate) mod tests {
         if bw > 0.0 {
             let edge_col = col(t.color(id(edge)));
             dl.ring(r, &c, seg, bw, edge_col);
-            super::super::window::panel_edge_glow(dl, t, r, &c, seg, edge_col, bw, AT_REST);
         }
     }
 
@@ -623,13 +596,6 @@ pub(crate) mod tests {
     }
 
     /// The rung's OWN ring, whichever kind it is — the first one drawn.
-    ///
-    /// Since 2026-08-23 the master ships `panel_edge` lit, so `draw_in`
-    /// may append a second, plain `Ring` after this one: its own burned
-    /// core (`window.rs`'s `panel_edge_glow`, called strictly after
-    /// `dl.ring`/`dl.ring_grad` in `draw_in` above — the order is the
-    /// call order, not a guess about paint order). That second ring is
-    /// glow's business, not this rung's, so it is not this function's.
     fn ring_cmd(dl: &DrawList) -> DrawCmd {
         let rings: Vec<_> = dl
             .cmds()
@@ -686,11 +652,6 @@ pub(crate) mod tests {
         let mut dl = DrawList::new();
         dl.set_vector(true);
         popover().draw_in(&mut dl, &t, box_(), box_(), AT_REST);
-        // Since 2026-08-23 the master ships `panel_edge` lit, so
-        // `panel_edge_glow` (called after the weld, in `draw_in` above)
-        // appends its own core-ring and glow-band shapes after this rung's
-        // one welded record — this test is about the WELD, so it looks at
-        // `shapes()[0]` and no longer claims that is the only shape.
         assert!(dl.shape_len() >= 1, "the rung wrote no silhouette at all");
         let rec = dl.shapes()[0];
         use crate::draw::Shape;

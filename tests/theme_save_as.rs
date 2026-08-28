@@ -11,6 +11,10 @@
 //! even looking at, matching neither the preview nor the theme it replaced.
 //! The same bug the patch closed, moved one button along.
 //!
+//! The dressed halo here is the FOCUS RING's (`glow.focus_ring`), the one
+//! lit class left after the panel-edge effect was removed on 2026-08-27 at
+//! the owner's order — the silence contract under test is the same.
+//!
 //! Its own process because it steers `HOME` and `XDG_DATA_HOME`, which
 //! `save_theme_as` and the loader's search walk both read. It never loads a
 //! theme; the claim is entirely about bytes.
@@ -18,16 +22,15 @@
 use nacelle::theme::{
     self,
     color::Oklch,
-    edit::{border_edits, Border, Scope},
+    edit::{border_colour_edit, focus_ring_edits, FocusRing, RingStyle, Scope},
 };
 
-/// The theme the editor has open: a halo the AUTHOR dressed, so the edit set
-/// says nothing at all about `radius` or `alpha`.
+/// The theme the editor has open: a ring halo the AUTHOR dressed, so the
+/// edit set says nothing at all about `radius`.
 const SOURCE: &str = r#"# Zrodlo. To jest motyw, ktory widac na ekranie.
-[glow.panel_edge]
+[glow.focus_ring]
 enabled = false
 radius  = 2.40u                       # the author's own halo
-alpha   = 0.500
 
 [elev.panel]
 edge.color = oklch(0.5000, 0.0500, 200.00)
@@ -39,10 +42,9 @@ accent = oklch(0.6000, 0.1000, 300.00)
 /// A DIFFERENT theme that already owns the name SAVE AS is about to take.
 /// Its numbers are the ones a save must not quietly inherit.
 const TARGET: &str = r#"# Docelowy. Inny motyw, ktory juz zajmuje te nazwe.
-[glow.panel_edge]
+[glow.focus_ring]
 enabled = true
 radius  = 3.00u
-alpha   = 0.900
 
 [palette]
 accent = oklch(0.2000, 0.0100, 10.00)
@@ -78,11 +80,26 @@ fn saving_as_a_name_that_is_taken_writes_this_theme_not_a_hybrid() {
     std::fs::write(&target, TARGET).unwrap();
 
     // The set the editor really produces for a theme that HAS dressed its
-    // halo: neither radius nor alpha is in it, so only the file it is laid
-    // against can decide what they end up being.
+    // ring halo: `halo_dressed = true`, so the radius is not in it, and only
+    // the file it is laid against can decide what it ends up being.
     let colour = Oklch { l: 0.7000, c: 0.1200, h: 40.00, alpha: 1.0 };
-    let edits = border_edits(Scope::Theme, Border::Neon, colour, true);
-    for token in ["glow.panel_edge.radius", "glow.panel_edge.alpha"] {
+    let mut edits = vec![border_colour_edit(Scope::Theme, colour)];
+    edits.extend(focus_ring_edits(
+        Scope::Theme,
+        true,
+        &FocusRing {
+            style: RingStyle::Solid,
+            width_u: 0.20,
+            offset_u: 0.30,
+            colour,
+            dash_u: 0.0,
+            gap_u: 0.0,
+            halo: true,
+            halo_alpha: 0.30,
+            halo_dressed: true,
+        },
+    ));
+    for token in ["glow.focus_ring.radius"] {
         assert!(
             !edits.iter().any(|e| e.token == token),
             "the editor mentioned {token} — this test can no longer say anything \
@@ -97,11 +114,11 @@ fn saving_as_a_name_that_is_taken_writes_this_theme_not_a_hybrid() {
 
     // ---- 1. the dress that travelled is the SOURCE's ----------------------
     assert!(
-        after.contains("radius  = 2.40u") && after.contains("alpha   = 0.500"),
+        after.contains("radius  = 2.40u"),
         "the theme saved under a new name did not bring its own halo:\n{after}"
     );
     assert!(
-        !after.contains("3.00u") && !after.contains("0.900"),
+        !after.contains("3.00u"),
         "THE HYBRID: the saved theme is wearing the halo of the file it \
          replaced, so it matches neither the preview nor that file:\n{after}"
     );
@@ -128,7 +145,7 @@ fn saving_as_a_name_that_is_taken_writes_this_theme_not_a_hybrid() {
         .lines()
         .find(|l| l.trim_start().starts_with("enabled ="))
         .expect("the file lost its enabled line");
-    assert!(switch.contains("= true"), "NEON's switch never reached the file: {switch}");
+    assert!(switch.contains("= true"), "the ring's switch never reached the file: {switch}");
 
     // ---- 4. the theme it was saved FROM is untouched ----------------------
     assert_eq!(

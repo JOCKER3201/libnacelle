@@ -4095,9 +4095,9 @@ impl DrawList {
     /// WITHOUT A MASK BAND there is no soft disk to re-map and this falls
     /// to [`DrawList::glow_shell`], which draws the halo's own shape:
     /// the profile is DROPPED, and a tube asked for that way comes back
-    /// an unshaped glow with no aura and no decay. It is unreachable from
-    /// [`crate::object::window::panel_edge_glow`] — `FontSystem`'s soft
-    /// band is a compile-time rectangle — but this is `pub`, the recipe
+    /// an unshaped glow with no aura and no decay. It was unreachable from
+    /// the panel-edge effect (removed 2026-08-27, the owner's order) —
+    /// `FontSystem`'s soft band is a compile-time rectangle — but this is `pub`, the recipe
     /// for the next consumer sends callers here, and a silent degradation
     /// nobody wrote down is one somebody rediscovers. Pinned by
     /// `a_maskless_tube_falls_back_to_the_unshaped_shell`.
@@ -4267,10 +4267,12 @@ impl DrawList {
     ///
     /// It writes NO command to the register: the outer call already stands
     /// for "a tube is here", and the inner face is that one intent
-    /// rendered, not a second glow to hash. Drawn AFTER the body fill by
-    /// its one caller ([`crate::object::window::panel_edge_glow`], itself
-    /// the rung's last act), so the additive light lands ON the frame and
-    /// is not buried under an opaque fill.
+    /// rendered, not a second glow to hash. Meant to be drawn AFTER the
+    /// body fill, so the additive light lands ON the frame and is not
+    /// buried under an opaque fill. (Its one production caller — the
+    /// panel-edge effect — was removed on 2026-08-27 at the owner's
+    /// order; the emitter stays a library capability, pinned by its own
+    /// tests below.)
     #[allow(clippy::too_many_arguments)]
     pub fn glow_ring_inward_with(
         &mut self,
@@ -4290,10 +4292,10 @@ impl DrawList {
         // soft glow is OUTSIDE_ONLY by construction — and a shaped profile
         // has nowhere to ride on it (the same gate as `glow_ring_with`,
         // K3d, 2026-08-23). The caller already only reaches this function
-        // when `!profile.is_halo()` (`panel_edge_glow`'s own gate — a HALO
-        // never asks for an inner face at all), so `is_halo()` is checked
-        // here too rather than assumed, for the caller that has not been
-        // written yet. Dropped on a maskless caller either way.
+        // when `!profile.is_halo()` (a HALO never asks for an inner face
+        // at all), so `is_halo()` is checked here rather than assumed,
+        // for the caller that has not been written yet. Dropped on a
+        // maskless caller either way.
         if (self.vector && profile.is_halo()) || u1 <= u0 || v1 <= v0 {
             return;
         }
@@ -5547,8 +5549,8 @@ mod tests {
     /// asserted by name: brighter than the caller's alpha at the glass
     /// (the aura), monotone non-increasing the whole way (a ramp that
     /// turns back up is a second band nobody named), inside 0..1
-    /// everywhere (a blend factor outside it is the undefined output the
-    /// master warns about at `glow.panel_edge.color`), and exactly 0.0 at
+    /// everywhere (a blend factor outside it is undefined output, 5.0,
+    /// 5.13), and exactly 0.0 at
     /// the rim BY THE VERTEX, not by a texture sample landing on the
     /// mask's zero texel. Run at three band counts and three reaches,
     /// INCLUDING a reach finer than one band, and at two amounts, the
@@ -5737,10 +5739,9 @@ mod tests {
     ///
     /// `glow_ring_with` re-maps the soft disk's own profile, so with no
     /// disk to sample it falls to `glow_shell` and the profile is
-    /// dropped whole — no aura, no decay. Unreachable from
-    /// `panel_edge_glow` today (`FontSystem::mask_soft_uv()` is a
-    /// compile-time rectangle), but the call is `pub` and the recipe on
-    /// `TubeKeys` sends the next consumer here, so the degradation is
+    /// dropped whole — no aura, no decay. `FontSystem::mask_soft_uv()` is
+    /// a compile-time rectangle, but the call is `pub` and a future
+    /// consumer may band its own mask, so the degradation is
     /// pinned: the shaped call and the unshaped one must agree vertex for
     /// vertex, which is what "the profile is dropped" MEANS.
     #[test]

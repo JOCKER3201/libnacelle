@@ -454,7 +454,7 @@ pub struct HostApi {
         extern "C" fn(ctx: *mut c_void, id: u32, buf: *mut u8, cap: u32) -> u32,
     /// One quad sampling the soft-mask sprite — the piece of the host's
     /// sprite glow and shadow path a plugin can reach, so a plugin panel
-    /// can glow the way `object::window::panel_edge_glow` does. `pts` is
+    /// can glow the way the toolkit's own soft-sprite emitters do. `pts` is
     /// four corners, eight floats, exactly like [`HostApi::quad`]; `uv`
     /// is eight floats in the SPRITE's own 0..1 space, clamped by the
     /// host and mapped into the atlas's mask band — the atlas layout

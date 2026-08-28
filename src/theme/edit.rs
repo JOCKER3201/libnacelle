@@ -26,9 +26,10 @@
 //! That question changed its answer on 2026-08-18, which is the best argument
 //! for the module there has been: `neon` used to mean a blurred copy of the
 //! border and now means a lit glass tube, the blurred copy is called `glow`,
-//! and a theme file saved under the old name has to keep opening on the thing
-//! it actually draws. All of that is [`Border`] and [`border_edits`] — three
-//! callers, one answer, and one place to change it.
+//! and a theme file saved under the old name had to keep opening on the thing
+//! it actually drew. (The whole panel-edge effect — `Border`, `border_edits`
+//! and `glow_reach_edit` with it — was removed on 2026-08-27 at the owner's
+//! order; the paragraph stays as the module's own best example.)
 //!
 //! TWO PAGES, ONE MODEL. The sets above are the editor's ADVANCED page: one
 //! control per thing. The BASIC page at the bottom of this file is the same
@@ -67,42 +68,6 @@ use super::color::Oklch;
 pub enum Scope {
     /// Every surface at once — the whole theme.
     Theme,
-}
-
-/// The three borders the editor offers.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Border {
-    /// A ring and nothing else.
-    Line,
-    /// The same ring with a halo around it — a blurred copy of the edge
-    /// in the edge's own colour.
-    ///
-    /// CALLED `Neon` UNTIL 2026-08-18, and the name was wrong twice over:
-    /// it is not what a neon sign looks like, and it took the word the
-    /// owner wanted for the thing that is. The tokens it writes have not
-    /// moved and neither has the picture — the halo is drawn from the
-    /// same four keys it always was, so a theme file written under the
-    /// old name opens on this kind and looks the same to the bit.
-    ///
-    /// The halo has NO COLOUR OF ITS OWN. `object/window.rs` passes the
-    /// ring's colour into the emitter, and `glow.panel_edge.color` is
-    /// declared in the master and read by nobody. So one colour drives
-    /// both, which is why the editor has one set of colour sliders for
-    /// the border rather than two.
-    Glow,
-    /// A lit glass tube: a core burned toward white by the drive on it, a
-    /// saturated band of colour against the glass, and light that stops
-    /// instead of fading.
-    ///
-    /// THE KIND WRITES A PROFILE, NOT A LOOK. Every number the tube is
-    /// made of — how hard the core is driven, how strong the band is, how
-    /// far it reaches, how fast the light falls — is a token of the
-    /// theme's, and this module names none of them: the one word
-    /// `glow.panel_edge.falloff = tube` is what turns the four keys the
-    /// halo already used into a tube, and the master carries the tube's
-    /// own dress beside them. A theme that wants a different tube edits
-    /// the theme, not this list.
-    Neon,
 }
 
 /// The three backgrounds the editor offers.
@@ -169,8 +134,7 @@ pub fn oklch_literal(c: Oklch) -> String {
 
 /// Tokens that carry the border, for one scope.
 ///
-/// `elev.panel.edge.color` and `.width` are what `elev::Level` reads; the
-/// glow keys are what `panel_edge_glow` reads (`object/window.rs`). Of the
+/// `elev.panel.edge.color` and `.width` are what `elev::Level` reads. Of the
 /// four other `edge.*` keys the master declares, THREE gained a reader on
 /// 2026-08-17 — `color2`, `mode` and `axis` are the two-stop sugar pair, and
 /// `elev::Level::edge_gradient` reads all three — but the editor has no
@@ -206,107 +170,12 @@ pub fn border_colour_edit(scope: Scope, colour: Oklch) -> Edit {
     Edit::new("border.default", oklch_literal(colour))
 }
 
-/// `halo_dressed` answers "does the theme already draw a visible halo" —
-/// resolved radius AND alpha both above zero. The caller reads it ONCE, off
-/// the theme as the file has it, when the editor opens; this function stays
-/// pure so the tests need no engine.
-///
-/// The "once, off the file" half is not a detail. Asking the LIVE bake made
-/// this set an input to itself — the preview it produced was the answer the
-/// next call read — and the halo blinked five times a second while a slider
-/// moved (`.gap-program/usterka-edytor-suwaki-glow.md`, usterka 2). What is
-/// answered here has to be a fact about the THEME, never about the preview
-/// standing on it.
-pub fn border_edits(scope: Scope, kind: Border, colour: Oklch, halo_dressed: bool) -> Vec<Edit> {
-    let mut out = vec![border_colour_edit(scope, colour)];
-    match kind {
-        // The theme's own radius and alpha are left standing: LINE only
-        // takes the light away, and `enabled = false` is the whole of that
-        // (`panel_edge_glow` returns before either is read). The falloff
-        // is left standing for the same reason — a kind that draws no
-        // light has no opinion about its shape.
-        Border::Line => out.push(Edit::new("glow.panel_edge.enabled", "false")),
-        // NEON dresses the halo ONLY where the theme has not: the default
-        // master ships `radius = 0u` and `alpha = 0.0` and `window.rs:104`
-        // returns at zero, so a bare switch was invisible there. A theme
-        // that has dressed its own halo keeps its dress — the shipped
-        // variants (removed 2026-08-16) each wore their own numbers, from
-        // azure's 0.6u/0.16 to cockpit's 1.6u/0.34, and writing the seeds
-        // over all five was the earlier shape's mistake, found in
-        // verification; a user's theme deserves the same respect.
-        //
-        // KEEPING A DRESS IS SAYING NOTHING, and the save has to hear that
-        // the way a bake does. It does since 2026-08-18: the file is
-        // patched, so the author's `radius = 2.40u` is simply not one of
-        // the lines a save rewrites — and the file that is patched is THIS
-        // theme's, under whatever name the save lands (`theme::
-        // save_theme_as`). SAVE AS is a copy of the theme on screen, which
-        // is what makes that true for a new name and for a name that
-        // already carries someone else's file alike. The first draft of
-        // this comment claimed only a brand-new name could still cost the
-        // dress; saving over an EXISTING theme cost it too, and worse — the
-        // saved theme wore that file's halo and matched neither what was on
-        // screen nor what it was saved over.
-        //
-        // What is left is not a hole but the absence of a source: saved off
-        // the master, which is not a file, the set IS the whole theme and
-        // the halo is the seed below, because there was never a dress to
-        // keep.
-        //
-        // The two lit kinds differ in ONE token, which is the point: a
-        // tube is the same light spent differently, so switching between
-        // them must not disturb the radius, the alpha or the colour the
-        // user chose for either.
-        //
-        // GLOW WRITES ITS WORD OUT LOUD rather than leaving the key
-        // alone. The kind is a promise about the profile, and the only
-        // way to keep it on a file that already says `tube` is to say
-        // `gauss` — the master's own word for the soft halo. The cost is
-        // that a theme which had written `halo` or `quad` there has that
-        // word replaced; those three words differ only in a reader that
-        // does not exist, so the picture is the same either way, and a
-        // key that silently disagreed with the list would be worse.
-        Border::Glow | Border::Neon => {
-            out.push(Edit::new("glow.panel_edge.enabled", "true"));
-            out.push(Edit::new(
-                "glow.panel_edge.falloff",
-                if kind == Border::Neon { "tube" } else { "gauss" },
-            ));
-            // A lit kind dresses the light ONLY where the theme has not:
-            // the default master ships `radius = 0u` and `alpha = 0.0`
-            // and `panel_edge_glow` returns at zero, so a bare switch was
-            // invisible there. A theme that has dressed its own keeps its
-            // dress — the shipped variants (removed 2026-08-16) each wore
-            // their own numbers, from azure's 0.6u/0.16 to cockpit's
-            // 1.6u/0.34, and writing the seeds over all five was the
-            // earlier shape's mistake, found in verification; a user's
-            // theme deserves the same respect.
-            //
-            // The two seeds are the REACH and the AMOUNT of the light,
-            // which both kinds need and neither owns. Nothing seeds the
-            // tube's own dress — its drive, its band and its decay come
-            // from the master, which states them for exactly this reason:
-            // a kind picked in a list must not be a place where a look is
-            // decided in code.
-            if !halo_dressed {
-                out.push(Edit::new("glow.panel_edge.radius", "1.6u"));
-                out.push(Edit::new("glow.panel_edge.alpha", "0.34"));
-            }
-        }
-    }
-    out
-}
-
 /// The BORDER'S OWN THICKNESS — `border.edge.width`, and nothing else.
 ///
 /// SEVEN KEYS OF GEOMETRY AND NOT ONE OF THEM IS A RADIUS. `[border.edge]`
 /// (default.theme:432-446) declares `width`, `style`, `dash`, `gap`,
 /// `phase`, `bracket_len` and `bracket_inset`. A border in this theme
-/// language has a WIDTH; the only radius anywhere near one is the REACH of
-/// its light ([`glow_reach_edit`]), which is a different token in a
-/// different section and answers a different question. The owner asked for
-/// "ustawienie promienia borderu" on 2026-08-18 and both readings were
-/// delivered, because both were missing and both are useful.
+/// language has a WIDTH and no radius at all.
 ///
 /// THE READER IS NAMED AND IT IS HOT. `border.edge.width` is one of the
 /// tokens the bake resolves into its fast table (`theme/mod.rs:1939`,
@@ -329,34 +198,6 @@ pub fn border_edits(scope: Scope, kind: Border, colour: Oklch, halo_dressed: boo
 pub fn border_width_edit(scope: Scope, width_u: f32) -> Edit {
     let Scope::Theme = scope;
     Edit::new("border.edge.width", format!("{:.2}u", width_u.clamp(0.0, 1.0)))
-}
-
-/// HOW FAR A LIT BORDER'S LIGHT REACHES — `glow.panel_edge.radius`.
-///
-/// The second reading of "promień borderu", and the only token in this
-/// build that a border and a radius both have a claim on. It is read by
-/// `object/window.rs:104`, which returns at zero, and it is the number
-/// [`border_edits`] SEEDS at `1.6u` on a theme that has never dressed its
-/// halo. That seeding is a floor under a switch, not an answer to "how
-/// wide" — until now nothing could answer that, which is why a person who
-/// picked GLOW got one reach and no say in it.
-///
-/// THE RANGE IS DECLARED IN THE FILE, not chosen here: `panel_edge.radius`
-/// says `u, 0u .. 8.76u` (its own doc carries the derivation — the
-/// editor's 4mm calibration of 2026-08-25, raised the same day by the
-/// owner's "o 300% po jednej i drugiej stronie" from the 2.19u it first
-/// landed on), and 0u is the master's own `none` sentinel — draw
-/// nothing. A caller that hands this zero is asking for an unlit border
-/// by way of the reach, which is a legal thing to ask and reads on
-/// screen exactly like NONE.
-///
-/// WHO WINS. This is written by the editor AFTER [`border_edits`], over
-/// the top of the seed, because a number a person moved outranks a floor
-/// the model put under a switch. The caller does that merge — one
-/// assignment per token, or a file would carry the key twice.
-pub fn glow_reach_edit(scope: Scope, radius_u: f32) -> Edit {
-    let Scope::Theme = scope;
-    Edit::new("glow.panel_edge.radius", format!("{:.2}u", radius_u.clamp(0.0, 8.76)))
 }
 
 /// How far a background answer's COLOUR travels along the `[elev.*]`
@@ -1432,114 +1273,13 @@ mod tests {
     }
 
     #[test]
-    fn the_border_colour_is_written_once_and_the_halo_wears_it() {
-        // `glow.panel_edge.color` exists in the master and has no reader, so
-        // a second colour here would be a value that changes nothing. If a
-        // reader is ever added, THIS test is where the second write belongs.
-        let neon = border_edits(Scope::Theme, Border::Neon, c(0.7, 0.15, 200.0, 1.0), false);
-        // The border's colour is the shared root `border.default` (the leaf
-        // `elev.panel.edge.color` and every rung reach it by reference); the
-        // halo writes no colour of its own.
-        let colours: Vec<_> = neon
-            .iter()
-            .filter(|e| e.token.ends_with("color") || e.token == "border.default")
-            .collect();
-        assert_eq!(
-            colours.len(),
-            1,
-            "the border wrote {} colours; the halo has none of its own",
-            colours.len()
-        );
-        assert_eq!(colours[0].token, "border.default");
-    }
-
-    #[test]
-    fn a_lit_kind_dresses_the_light_and_line_does_not_touch_it() {
-        let colour = c(0.7, 0.15, 200.0, 1.0);
-        let line = border_edits(Scope::Theme, Border::Line, colour, false);
-        let of = |v: &Vec<Edit>| v.iter().find(|e| e.token.ends_with("enabled")).unwrap().value.clone();
-        assert_eq!(of(&line), "false");
-        // Both lit kinds, because the seeding is the REACH and the AMOUNT
-        // of light and neither kind owns them: a claim proved on one of
-        // them says nothing about the other.
-        for kind in [Border::Glow, Border::Neon] {
-            let lit = border_edits(Scope::Theme, kind, colour, false);
-            let dressed = border_edits(Scope::Theme, kind, colour, true);
-            // A theme that has dressed its own keeps it: a theme's own
-            // 0.70u must not become the seed's 1.6u because someone
-            // picked a kind.
-            for k in ["glow.panel_edge.radius", "glow.panel_edge.alpha"] {
-                assert!(
-                    !dressed.iter().any(|e| e.token == k),
-                    "{kind:?} overwrote {k} on a theme that had already dressed its light"
-                );
-            }
-            // A lit kind must write a radius and an alpha, because the
-            // default master ships both at zero and the renderer draws
-            // nothing at zero — a switch alone was measured invisible on
-            // default and inert on Cockpit, which ships the halo on.
-            for k in ["glow.panel_edge.radius", "glow.panel_edge.alpha"] {
-                assert!(
-                    lit.iter().any(|e| e.token == k),
-                    "{kind:?} did not write {k}; on the default theme it is invisible"
-                );
-                // And LINE must NOT: the theme's own dress survives a trip
-                // through LINE, so switching back finds it as it was.
-                assert!(
-                    !line.iter().any(|e| e.token == k),
-                    "LINE wrote {k}, flattening the theme's own light"
-                );
-            }
-            assert_eq!(of(&lit), "true");
-        }
-    }
-
-    /// The two lit kinds differ in the FALLOFF and in nothing else.
-    ///
-    /// Both halves are load-bearing. That NEON says `tube` is what makes
-    /// it a tube at all — the word is the only thing `panel_edge_glow`
-    /// asks about. That GLOW says `gauss` is what makes the kind a
-    /// promise rather than a hope: without it, picking GLOW on a file
-    /// that already said `tube` would leave the tube standing under a
-    /// list that reads GLOW.
-    ///
-    /// And that the two sets are otherwise EQUAL is what makes switching
-    /// between them free: a radius, an alpha and a colour the user chose
-    /// under one kind are still there under the other.
-    #[test]
-    fn the_two_lit_kinds_differ_in_the_falloff_alone() {
-        let colour = c(0.7, 0.15, 200.0, 1.0);
-        for dressed in [false, true] {
-            let glow = border_edits(Scope::Theme, Border::Glow, colour, dressed);
-            let neon = border_edits(Scope::Theme, Border::Neon, colour, dressed);
-            let word = |v: &Vec<Edit>| {
-                v.iter()
-                    .find(|e| e.token == "glow.panel_edge.falloff")
-                    .unwrap_or_else(|| panic!("a lit kind named no falloff: {v:?}"))
-                    .value
-                    .clone()
-            };
-            assert_eq!(word(&glow), "gauss");
-            assert_eq!(word(&neon), "tube");
-            let rest = |v: &Vec<Edit>| -> Vec<Edit> {
-                v.iter().filter(|e| e.token != "glow.panel_edge.falloff").cloned().collect()
-            };
-            assert_eq!(
-                rest(&glow),
-                rest(&neon),
-                "the two lit kinds moved something other than the falloff"
-            );
-        }
-    }
-
-    #[test]
     fn no_set_writes_a_token_nothing_reads() {
-        // The whole point of the module. These two are declared by the master
-        // and read by no Rust in the workspace (measured 2026-08-17); writing
-        // them would produce a file that asks for a gradient border and gets a
-        // flat one — which is what the shipped cockpit theme did, until it
-        // left with the rest on 2026-08-16.
-        const DEAD: [&str; 2] = ["elev.panel.edge.gradient", "glow.panel_edge.color"];
+        // The whole point of the module. Declared by the master and read by
+        // no Rust in the workspace (measured 2026-08-17); writing it would
+        // produce a file that asks for a gradient border and gets a flat
+        // one — which is what the shipped cockpit theme did, until it left
+        // with the rest on 2026-08-16.
+        const DEAD: [&str; 1] = ["elev.panel.edge.gradient"];
         // `glass.rank` left this list on 2026-08-16, the day it gained its
         // first reader (`elev::Level::draw`, `window::frame`).
         //
@@ -1554,10 +1294,6 @@ mod tests {
         // there is no baked stop list for any reader to ask for.
         let colour = c(0.7, 0.15, 200.0, 1.0);
         let mut all = Vec::new();
-        for kind in [Border::Line, Border::Glow, Border::Neon] {
-            all.extend(border_edits(Scope::Theme, kind, colour, false));
-            all.extend(border_edits(Scope::Theme, kind, colour, true));
-        }
         all.push(border_colour_edit(Scope::Theme, colour));
         for kind in [Glass::Solid, Glass::Blur, Glass::Frosted] {
             all.extend(glass_edits(Scope::Theme, kind, colour, colour, 1.0, 2.0, 0.42, GlassReach::EveryRung));
@@ -1817,41 +1553,6 @@ mod tests {
         assert_eq!(border_width_edit(Scope::Theme, -3.0).value, "0.00u");
     }
 
-    #[test]
-    fn a_lit_borders_reach_is_held_inside_the_range_the_master_declares() {
-        let e = glow_reach_edit(Scope::Theme, 2.4);
-        assert_eq!(e.token, "glow.panel_edge.radius");
-        assert_eq!(e.value, "2.40u");
-        // The master declares `u, 0u .. 8.76u` for this key (its own doc
-        // carries the 4mm-times-four derivation, 2026-08-25), and 0u is
-        // its own `none` sentinel — both ends are the FILE's.
-        assert_eq!(
-            glow_reach_edit(Scope::Theme, 12.0).value,
-            "8.76u",
-            "a reach past the master's declared 8.76u was let through"
-        );
-        assert_eq!(glow_reach_edit(Scope::Theme, -1.0).value, "0.00u");
-    }
-
-    /// The seed a lit kind lays under an undressed theme is a FLOOR, and a
-    /// number a person moved outranks it. The merge is the caller's — this
-    /// only pins that the two really do collide on one token, which is the
-    /// fact that makes a merge necessary at all.
-    #[test]
-    fn the_reach_a_person_sets_and_the_seed_a_kind_lays_are_one_token() {
-        let lit = border_edits(Scope::Theme, Border::Neon, c(0.7, 0.15, 200.0, 1.0), false);
-        let seeded = lit
-            .iter()
-            .find(|e| e.token == "glow.panel_edge.radius")
-            .expect("an undressed theme must be given a reach by the kind");
-        assert_eq!(
-            seeded.token,
-            glow_reach_edit(Scope::Theme, 1.0).token,
-            "if these two ever stop naming one token the caller's merge is a no-op \
-             and the knob stops winning"
-        );
-    }
-
     // ------------------------------------ the whole-theme sets (2026-08-16)
 
     /// Every token the new sets may write, each with the reader that earns
@@ -1909,9 +1610,8 @@ mod tests {
         ("scrollbar.fade_ms", "view/scroll.rs:586"),
         ("scrollbar.track", "view/paint.rs:673"),
         ("component.scrollbar.track", "view/paint.rs:674"),
-        // ZGŁOSZENIE 6 (2026-08-18): the two readings of "promień borderu".
+        // ZGŁOSZENIE 6 (2026-08-18): the border's own thickness.
         ("border.edge.width", "theme/mod.rs:1939 (hot table `border_width`); elev.panel.edge.width = @panel.border -> @border.edge.width (default.theme:1767), read at object/elev.rs:421"),
-        ("glow.panel_edge.radius", "object/window.rs:104 — returns at zero, so this is the number that decides whether a lit border is visible at all"),
     ];
 
     /// Declared by the master and read by nothing that reaches the screen,
@@ -1988,12 +1688,10 @@ mod tests {
             all.extend(focus_ring_edits(Scope::Theme, enabled, &ring));
         }
         all.push(unfocused_dim_edit(Scope::Theme, 0.62));
-        // ZGŁOSZENIE 6's two: the border's own thickness, and the reach of
-        // its light. Both ends of both walls, so a clamp cannot smuggle a
-        // token past this net.
+        // ZGŁOSZENIE 6: the border's own thickness — both ends of the
+        // wall, so a clamp cannot smuggle a token past this net.
         for w in [0.0, 0.2, 5.0] {
             all.push(border_width_edit(Scope::Theme, w));
-            all.push(glow_reach_edit(Scope::Theme, w));
         }
         // BASIC's three sliders, both sides of the one conditional write.
         for tone in [Tone::NEUTRAL, Tone { hue_deg: 37.0, sat: 1.3, light: -0.02 }] {

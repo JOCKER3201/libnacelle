@@ -35,7 +35,7 @@
 //!
 //! [`Action`]: crate::widget::Action
 
-use super::window::{corner_segments, panel_edge_glow};
+use super::window::corner_segments;
 use crate::access::{AccessInfo, Role, States};
 use crate::corner::Cuts;
 use crate::draw::Corner;
@@ -506,7 +506,6 @@ impl Frame {
         let corners = [Corner { style, size: m.cut }; 4];
         let seg = corner_segments(t, &SEGMENTS, m.cut);
         ctx.dl.ring(outer, &corners, seg, m.border, line);
-        panel_edge_glow(ctx.dl, t, outer, &corners, seg, line, m.border, ctx.t);
         // The title bar's floor.
         ctx.dl.line(
             outer.x + m.border,

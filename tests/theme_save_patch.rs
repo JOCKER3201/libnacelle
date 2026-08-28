@@ -9,30 +9,33 @@
 //!
 //! What is pinned here is the seam between `theme::edit`'s edit set and the
 //! file it lands in. The set is an OVERLAY vocabulary — saying nothing about
-//! a token means "leave it standing", which is exactly how `border_edits`
-//! protects a theme that dressed its own halo. A save that generated the
+//! a token means "leave it standing", which is exactly how `focus_ring_edits`
+//! protects a theme that dressed its own ring halo. A save that generated the
 //! file whole read that same silence as "delete it", and the author's halo
 //! went out on the first SAVE. So this file asks the question the report
 //! asks: after a save, is the theme still what it was, everywhere the editor
 //! did not touch?
+//!
+//! (The dressed halo here was the panel edge's until the whole panel-edge
+//! effect was removed on 2026-08-27 at the owner's order; the focus ring
+//! wears the same silence contract, so the claim carries over unchanged.)
 
 use nacelle::theme::{
     self,
     color::Oklch,
-    edit::{border_edits, focus_ring_edits, Border, Edit, FocusRing, RingStyle, Scope},
+    edit::{border_colour_edit, focus_ring_edits, Edit, FocusRing, RingStyle, Scope},
 };
 
-/// A theme as a PERSON would have it: notes of their own, a halo dressed
+/// A theme as a PERSON would have it: notes of their own, a ring halo dressed
 /// with their numbers, a mood that re-declares one of the tokens the editor
 /// writes, and a value that runs over two lines.
 const AUTHORED: &str = r#"# Motyw wlasciciela. Ta notatka ma przezyc zapis.
 [meta]
 name = "Ubrany"
 
-[glow.panel_edge]
+[glow.focus_ring]
 enabled = false                       # the editor is about to turn this on
 radius  = 2.40u                       # the author's own halo - not the editor's seed
-alpha   = 0.500                       # ditto
 
 [border]
 default = oklch(0.5000, 0.0500, 200.00)   # a note that sits after a value
@@ -47,7 +50,7 @@ easing_p = [0.25, 0.10,
             0.25, 1.00]
 
 [mood.alert]
-glow.panel_edge.enabled = false       # the MOOD's own word, not the theme's
+glow.focus_ring.enabled = false       # the MOOD's own word, not the theme's
 "#;
 
 #[test]
@@ -70,11 +73,11 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
     std::fs::write(&path, AUTHORED).unwrap();
 
     // The set the editor really produces for a theme that HAS dressed its
-    // halo: `halo_dressed = true`, so neither radius nor alpha is mentioned.
+    // ring halo: `halo_dressed = true`, so the radius is not mentioned.
     // Hand-written edits here would test a hand-written claim; these come
     // from the model the window calls.
     let colour = Oklch { l: 0.7000, c: 0.1200, h: 40.00, alpha: 1.0 };
-    let mut edits = border_edits(Scope::Theme, Border::Neon, colour, true);
+    let mut edits = vec![border_colour_edit(Scope::Theme, colour)];
     edits.extend(focus_ring_edits(
         Scope::Theme,
         true,
@@ -98,7 +101,7 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
     });
     edits.push(Edit { token: "corner.mode", value: "chamfer".to_string() });
 
-    for token in ["glow.panel_edge.radius", "glow.panel_edge.alpha", "glow.focus_ring.radius"] {
+    for token in ["glow.focus_ring.radius"] {
         assert!(
             !edits.iter().any(|e| e.token == token),
             "the editor mentioned {token} — this test can no longer say anything \
@@ -117,12 +120,11 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
     });
     let px = |n: &str| theme::id(n).map(|i| theme::resolved().px(i)).expect(n);
     let flag = |n: &str| theme::id(n).map(|i| theme::resolved().flag(i)).expect(n);
-    let radius_before = px("glow.panel_edge.radius");
-    let alpha_before = px("glow.panel_edge.alpha");
+    let radius_before = px("glow.focus_ring.radius");
     assert!(
-        radius_before > 0.0 && alpha_before > 0.0,
+        radius_before > 0.0,
         "the fixture theme is not dressed, so nothing below compares anything: \
-         radius {radius_before}, alpha {alpha_before}"
+         radius {radius_before}"
     );
 
     let saved = theme::save_theme("ubrany", &edits).expect("the save refused");
@@ -133,10 +135,6 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
     assert!(
         after.contains("radius  = 2.40u"),
         "the author's halo radius did not survive the save:\n{after}"
-    );
-    assert!(
-        after.contains("alpha   = 0.500"),
-        "the author's halo alpha did not survive the save:\n{after}"
     );
 
     // ---- 2. the author's own notes survive --------------------------------
@@ -159,10 +157,9 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
     );
 
     // ---- 3. what the editor DID say landed, IN PLACE ------------------------
-    // By the line, not by `contains`: the ring's own `enabled` and its own
-    // colour are in this file too, and a substring search would call either
-    // of them a pass. What is being asked is that the value in THIS line
-    // changed and the rest of the line did not.
+    // By the line, not by `contains`: a substring search would call any of
+    // the file's other lines a pass. What is being asked is that the value
+    // in THIS line changed and the rest of the line did not.
     let line_with = |starts: &str| -> String {
         after
             .lines()
@@ -171,12 +168,12 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
             .to_string()
     };
     let switch = line_with("enabled =");
-    assert!(switch.contains("= true"), "NEON's switch never reached the file: {switch}");
+    assert!(switch.contains("= true"), "the ring's switch never reached the file: {switch}");
     assert!(
         switch.contains("# the editor is about to turn this on"),
         "the value was rewritten and took the note beside it with it: {switch}"
     );
-    // The colour lands on the shared root `border.default` now, not the
+    // The colour lands on the shared root `border.default`, not the
     // `elev.panel` leaf — one edit that moves every frame, the settings
     // window and each widget alike (`edit::border_colour_edit`).
     let colour = line_with("default =");
@@ -195,7 +192,7 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
         .nth(1)
         .expect("the mood section was dropped by the save");
     assert!(
-        mood.contains("glow.panel_edge.enabled = false"),
+        mood.contains("glow.focus_ring.enabled = false"),
         "the save wrote the theme's word into the mood's line:\n{after}"
     );
 
@@ -221,22 +218,16 @@ fn a_dressed_theme_saved_by_the_editor_still_wears_its_dress() {
         name: Some("ubrany".to_string()),
         ..Default::default()
     });
-    assert!(flag("glow.panel_edge.enabled"), "the halo is switched off after the save");
+    assert!(flag("glow.focus_ring.enabled"), "the halo is switched off after the save");
     // THE OWNER'S REPORT, as the owner stated it: the halo before the button
     // and the halo after it are the same halo. Not "a radius" — THAT radius.
     assert_eq!(
-        px("glow.panel_edge.radius"),
+        px("glow.focus_ring.radius"),
         radius_before,
         "THE OWNER'S REPORT: the halo the theme wore before SAVE is not the \
          halo it wears after it"
     );
-    assert_eq!(
-        px("glow.panel_edge.alpha"),
-        alpha_before,
-        "THE OWNER'S REPORT: the halo's coverage changed across a save that \
-         never mentioned it"
-    );
-    // The ring's halo wears the same silence and the same protection.
+    // The ring the editor switched on carries the width it was given.
     assert!(
         px("focus.ring.width") > 0.0,
         "the ring the editor switched on has no width: {}",
