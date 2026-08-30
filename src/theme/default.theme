@@ -5373,10 +5373,10 @@ list.title_gap = 0.6x @type.body.size   # gap between a list entry's title and i
 list.title_role = title.window      # type role of the ADD WIDGET window's own title · - · role · editor.rs:784's font_px(0.95)
 list.w_frac = 30%                   # the picker window's width · - · % of the viewport width · editor.rs:256
 list.w_min_px = 300px               # absolute floor for list.w_frac's result · - · device px · companion of editor.list.w_frac (3.2)
-list.item_h = 26u                   # one widget miniature's height · - · len (u) · 140.4 px; editor.rs:261's h*0.14
-list.item_h_min_px = 64px           # absolute floor for list.item_h · - · device px · companion of editor.list.item_h (3.2)
+list.tile_w = 24u                   # one widget tile's width AND height — the tile is square · - · len (u) · 129.6 px; the owner's word (2026-08-28) replacing a single full-width row per widget
+list.tile_w_min_px = 96px           # absolute floor for list.tile_w · - · device px · companion of editor.list.tile_w (3.2)
 list.max_h_frac = 86%               # the screen fraction the list may fill before miniatures shrink · - · % of the viewport height · editor.rs:263
-list.preview_head = 4u              # headroom above a live miniature, so a widget that draws its heading above its rect is not clipped · - · len (u) · 21.6 px; editor.rs:816 — a drawing correction, not layout
+list.icon_pad = 4u                  # inset of the tile's own placeholder icon from its shorter side · - · len (u) · 21.6 px; the owner's word (2026-08-30) replacing the picker's live miniature with a generic glyph
 button.w_frac = 10%                 # the editor button stack's width · - · % of the viewport width · editor.rs:222
 button.w_min_px = 110px             # absolute floor for button.w_frac's result · - · device px · companion of editor.button.w_frac (3.2)
 button.inset_x = @space.6           # the stack's inset from the window's right edge · - · len (u) · @space.6 = 4u = 21.6 px; today w*0.012, a WIDTH-relative inset in a height-scaled interface
